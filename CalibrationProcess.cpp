@@ -9,20 +9,24 @@ void CalibrationProcess::begin() {
 
 void CalibrationProcess::startCalibration() {
     _state = WAIT_0KP;
-    _lcd->showMessage("Calibration Req.", "Starting...     ");
-    delay(1000);
+    if (_lcd) {
+        _lcd->showMessage("Calibration Req.", "Starting...     ");
+        delay(1000);
+    }
 }
 
 bool CalibrationProcess::isCalibrating() const {
     return _state != IDLE;
 }
 
-int CalibrationProcess::readAdcAvg() {
-    long sum = 0;
-    for(int i=0; i<8; i++) {
-        sum += analogRead(_adcPin);
+float CalibrationProcess::readAdcAvg() {
+    // Quick 8-sample average - RC filter handles smoothing
+    float sum = 0.0f;
+    for (int i = 0; i < 8; i++) {
+        sum += (float)analogRead(_adcPin);
     }
-    return (int)(sum / 8);
+    yield();
+    return sum / 8.0f;
 }
 
 void CalibrationProcess::saveAndApply() {
@@ -46,29 +50,30 @@ void CalibrationProcess::handleButtonPress() {
             _lcd->showMessage("Calibration Mode", "Release Button  ");
             delay(1000); // Simple debounce/wait for release
             break;
-            
+
+        // Order: 0kp -> 6kp -> 4kp -> 2kp (easier to remove weights)
         case WAIT_0KP:
-            _tempAdc[0] = readAdcAvg();
-            _state = WAIT_2KP;
-            break;
-            
-        case WAIT_2KP:
-            _tempAdc[1] = readAdcAvg();
-            _state = WAIT_4KP;
-            break;
-            
-        case WAIT_4KP:
-            _tempAdc[2] = readAdcAvg();
+            _tempAdc[0] = (int)roundf(readAdcAvg());
             _state = WAIT_6KP;
             break;
-            
+
         case WAIT_6KP:
-            _tempAdc[3] = readAdcAvg();
+            _tempAdc[3] = (int)roundf(readAdcAvg());
+            _state = WAIT_4KP;
+            break;
+
+        case WAIT_4KP:
+            _tempAdc[2] = (int)roundf(readAdcAvg());
+            _state = WAIT_2KP;
+            break;
+
+        case WAIT_2KP:
+            _tempAdc[1] = (int)roundf(readAdcAvg());
             saveAndApply();
             _state = DONE;
             _doneStartTime = millis();
             break;
-            
+
         case DONE:
             // Should not happen via button, it auto-exits
             break;
@@ -76,6 +81,8 @@ void CalibrationProcess::handleButtonPress() {
 }
 
 void CalibrationProcess::showState() {
+    if (!_lcd) return;  // No display, skip
+
     static State lastShownState = IDLE;
 
     // Show header only on state change
@@ -108,8 +115,10 @@ void CalibrationProcess::showState() {
 }
 
 void CalibrationProcess::update() {
-    // Update display input
-    _lcd->update();
+    // Update display input (if display exists)
+    if (_lcd) {
+        _lcd->update();
+    }
 
     // Button handling
     bool physicalPressed = false;
@@ -131,7 +140,7 @@ void CalibrationProcess::update() {
     }
 
     // Check touch input
-    bool touchPressed = _lcd->isActionRequested();
+    bool touchPressed = _lcd ? _lcd->isActionRequested() : false;
 
     if (physicalPressed || touchPressed) {
         handleButtonPress();
@@ -143,7 +152,7 @@ void CalibrationProcess::update() {
             showState();
             if (millis() - _doneStartTime > 3000) {
                 _state = IDLE;
-                _lcd->showMessage("                ", "                "); // Clear
+                if (_lcd) _lcd->showMessage("                ", "                "); // Clear
             }
         } else {
             showState();

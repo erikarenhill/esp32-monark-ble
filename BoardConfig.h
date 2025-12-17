@@ -27,7 +27,7 @@
     // Fallback / Generic ESP32
     static const int I2C_SDA_PIN = 21;
     static const int I2C_SCL_PIN = 22;
-    static const int CADENCE_PIN = 27; // Default to 27 as requested
+    static const int CADENCE_PIN = 27;
     static const int ADC_PIN     = 34;
     static const int CAL_BUTTON_PIN = 0; // BOOT button
 #endif

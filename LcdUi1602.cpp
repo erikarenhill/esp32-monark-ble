@@ -25,11 +25,10 @@ void LcdUi1602::showMessage(const char* line1, const char* line2) {
   if (line2) printFixed(0, 1, line2);
 }
 
-void LcdUi1602::showPower(const PowerSample& s, float cycleConstant) {
+void LcdUi1602::showPower(const PowerSample& s, const WorkoutDisplay* workout) {
   char line1[17];
   char line2[17];
 
-  // Same UI style as before:
   // Line 1: P:####W C:###
   // Line 2: kp:#.## A:####
   snprintf(line1, sizeof(line1), "P:%4.0fW C:%3.0f", s.power_w, s.rpm);

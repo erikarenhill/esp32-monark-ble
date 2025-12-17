@@ -23,23 +23,8 @@ This project turns an ESP32 into a Bluetooth Low Energy (BLE) Cycling Power Mete
   - **Option A: LCD 1602 (I2C)**
     - SDA -> GPIO 21
     - SCL -> GPIO 22
-  - **Option B: ILI9341 TFT with Touch (Standard VSPI - Safe Boot)**
-    *The Olimex reference pins (12, 15) are "strapping pins" that can prevent the ESP32 from booting. This configuration uses the standard VSPI pins which are safe.*
-    
-    | Pin # | Label | Function | ESP32 GPIO | Notes |
-    | :--- | :--- | :--- | :--- | :--- |
-    | 1 | VCC | Power | 3.3V / 5V | Check module voltage |
-    | 2 | GND | Ground | GND | |
-    | 3 | LCD BL | Backlight | 3.3V | |
-    | 4 | IRQ | Touch IRQ | NC | |
-    | 5 | SCL | Touch I2C Clock | GPIO 22 | |
-    | 6 | SDA | Touch I2C Data | GPIO 21 | |
-    | 7 | D/C | Data/Command | **GPIO 4** | Changed from 12 |
-    | 8 | MOSI | SPI Data | **GPIO 23** | Changed from 13 |
-    | 9 | SCK | SPI Clock | **GPIO 18** | Changed from 14 |
-    | 10 | CS | Chip Select | **GPIO 5** | Changed from 15 |
-
-    *Note: Ensure the Display RST pin (if present) is connected to 3.3V or the ESP32 EN pin.*
+  - **Option B: ILI9341 TFT with Touch**
+    - See [tft-wroom.md](tft-wroom.md) for complete wiring guide
 
 - **Sensors:**
   - Cadence Sensor -> GPIO 27 (Note: Avoid GPIO 17 if using TFT)

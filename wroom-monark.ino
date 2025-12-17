@@ -1,26 +1,24 @@
 // Display Selection
 #define DISPLAY_TYPE_LCD1602 1
 #define DISPLAY_TYPE_TFT     2
-#define DISPLAY_TO_USE DISPLAY_TYPE_TFT
+#define DISPLAY_TO_USE 0
 
 #include <Arduino.h>
 #include "PowerSource.h"
 #include "PowerSimulator.h"
 #include "PowerReal.h"
 #include "BleCps.h"
-//#ifdef DISPLAY_TO_USE == DISPLAY_TYPE_LCD1602
-  #include "LcdUi1602.h"
-//#elif DISPLAY_TO_USE == DISPLAY_TYPE_TFT
-  #include "TftUi.h"
-
-//#endif
+//#include "LcdUi1602.h"
+//#include "TftUi.h"
+//#include "Menu.h"
+#include "Workout.h"
 #include "SettingsManager.h"
 #include "CalibrationProcess.h"
+#include "PowerWebServer.h"
 
 #include "BoardConfig.h"
 
 // -------- CONFIG --------
-static const bool USE_SIMULATOR = true;
 static const float CYCLE_CONSTANT = 1.05f;
 static const bool DEVELOPER_MODE = true; // If true, skip auto-calibration on missing settings
 
@@ -40,9 +38,11 @@ static const int CAL_DEF_6KP = 226;
 PowerSource* power = nullptr;
 BleCps ble;
 IDisplay* display = nullptr;
-MonarkCalibration* calibration = nullptr; // Changed to concrete type to allow update
+MonarkCalibration* calibration = nullptr;
 SettingsManager settings;
 CalibrationProcess* calProcess = nullptr;
+Workout workout;
+PowerWebServer* webServer = nullptr;
 
 void setup() {
   Serial.begin(115200);
@@ -52,19 +52,30 @@ void setup() {
   Serial.printf("Cadence Pin: %d\n", CADENCE_PIN);
   Serial.printf("ADC Pin: %d\n", ADC_PIN);
   Serial.printf("Cal Button Pin: %d\n", CAL_BUTTON_PIN);
+  Serial.flush();
 
   // Settings
+  Serial.println("Init settings...");
+  Serial.flush();
   settings.begin();
+  Serial.println("Settings OK");
+  Serial.flush();
 
   // Display
   if (DISPLAY_TYPE == DISPLAY_TYPE_LCD1602) {
-    display = new LcdUi1602(LCD_ADDR, 16, 2, I2C_SDA_PIN, I2C_SCL_PIN);
+  //  display = new LcdUi1602(LCD_ADDR, 16, 2, I2C_SDA_PIN, I2C_SCL_PIN);
   } else {
-    display = new TftUi();
+    //display = new TftUi();
   }
-  display->begin();
+  if (display) {
+    display->begin();
+  }
+  Serial.println("Display OK (null)");
+  Serial.flush();
 
   // Load calibration (needed for both sim and real)
+  Serial.println("Loading calibration...");
+  Serial.flush();
   int a0=CAL_DEF_0KP, a2=CAL_DEF_2KP, a4=CAL_DEF_4KP, a6=CAL_DEF_6KP;
   bool loaded = settings.loadCalibration(a0, a2, a4, a6);
 
@@ -77,11 +88,19 @@ void setup() {
 
   calibration = new MonarkCalibration(a0, a2, a4, a6);
 
+  // Load cycle constant from settings
+  float cycleConstant = settings.loadCycleConstant(CYCLE_CONSTANT);
+  Serial.printf("Cycle constant: %.2f\n", cycleConstant);
+
+  // Load simulator mode from settings (defaults to false)
+  bool useSimulator = settings.loadSimulatorMode(false);
+  Serial.printf("Simulator mode: %s\n", useSimulator ? "ON" : "OFF");
+
   // Power source (sim or real)
-  if (USE_SIMULATOR) {
-    power = new PowerSimulator(CYCLE_CONSTANT);
+  if (useSimulator) {
+    power = new PowerSimulator(cycleConstant);
   } else {
-    power = new PowerReal(CYCLE_CONSTANT, CADENCE_PIN, ADC_PIN, calibration);
+    power = new PowerReal(cycleConstant, CADENCE_PIN, ADC_PIN, calibration);
   }
   power->begin();
 
@@ -89,15 +108,32 @@ void setup() {
   calProcess = new CalibrationProcess(CAL_BUTTON_PIN, ADC_PIN, display, &settings, calibration);
   calProcess->begin();
 
-  if (!loaded && !DEVELOPER_MODE && !USE_SIMULATOR) {
+  if (!loaded && !DEVELOPER_MODE && !useSimulator) {
     Serial.println("No settings found. Starting calibration...");
     calProcess->startCalibration();
   }
 
-  // BLE CPS transport
-  ble.begin("LT2-PowerSim");
+  // Load device name for BLE and WiFi
+  String deviceName = settings.loadDeviceName("MonarkPower");
+  Serial.printf("Device name: %s\n", deviceName.c_str());
+  Serial.flush();
 
-  Serial.println("System started (LCD + BLE).");
+  // BLE CPS transport (uses device name)
+  Serial.println("Starting BLE...");
+  Serial.flush();
+  ble.begin(deviceName.c_str());
+  Serial.println("BLE OK");
+  Serial.flush();
+
+  // Web server for power data and calibration (uses device name for WiFi AP)
+  Serial.println("Starting WiFi...");
+  Serial.flush();
+  webServer = new PowerWebServer(&settings, calibration, ADC_PIN);
+  webServer->begin();  // Uses device name from settings
+  Serial.println("WiFi OK");
+  Serial.flush();
+
+  Serial.println("System started (LCD + BLE + WiFi).");
 }
 
 void loop() {
@@ -116,14 +152,67 @@ void loop() {
   }
 
   // Normal mode: update display input (touch)
-  if (display) display->update();
+ /* if (display) {
+    display->update();
 
-  // Check for manual calibration request from UI
-  if (display && display->isActionRequested()) {
-    if (calProcess) {
-      calProcess->startCalibration();
+    // Handle menu actions
+    Menu* menu = display->getMenu();
+    if (menu) {
+      MenuAction action = menu->getLastAction();
+      if (action == MenuAction::Calibration) {
+        if (calProcess) {
+          calProcess->startCalibration();
+        }
+      }
+      else if (action == MenuAction::ViewCalibration) {
+        if (calibration) {
+          char line1[32], line2[32];
+          snprintf(line1, sizeof(line1), "0kp:%d 2kp:%d",
+                   calibration->getAdc0(), calibration->getAdc2());
+          snprintf(line2, sizeof(line2), "4kp:%d 6kp:%d",
+                   calibration->getAdc4(), calibration->getAdc6());
+          display->showMessage(line1, line2);
+        }
+      }
     }
-  }
+
+    // Handle workout actions
+    MenuAction workoutAction = display->getWorkoutAction();
+    switch (workoutAction) {
+      case MenuAction::Start:
+        workout.start();
+        Serial.println("Workout started");
+        break;
+      case MenuAction::Pause:
+        if (workout.isRunning()) {
+          workout.pause();
+          Serial.println("Workout paused");
+        } else if (workout.isPaused()) {
+          workout.resume();
+          Serial.println("Workout resumed");
+        }
+        break;
+      case MenuAction::Stop:
+        workout.stop();
+        Serial.println("Workout stopped");
+        break;
+      case MenuAction::Lap:
+        if (workout.isRunning()) {
+          workout.lap();
+          Serial.printf("Lap %d recorded\n", workout.getLapCount());
+        }
+        break;
+      default:
+        break;
+    }
+
+    // isActionRequested handles NEXT button in calibration
+    if (display->isActionRequested()) {
+      if (!menu && calProcess) {
+        calProcess->startCalibration();
+      }
+    }
+  }*/
 
   // Update calibration process (for non-calibrating state)
   if (calProcess) {
@@ -135,16 +224,40 @@ void loop() {
   if (power->hasSample()) {
     PowerSample s = power->getSample();
 
-    // Serial debug
-    Serial.printf("rpm=%.1f kp=%.2f P=%.1fW rev=%u evt=%u adc=%u\n",
-                  s.rpm, s.kp, s.power_w, s.crank_revs, s.crank_evt_1024, s.adc_raw);
+    // Add power sample to workout if running
+    if (workout.isRunning()) {
+      workout.addPowerSample(s.power_w);
+    }
 
-    // LCD
-    display->showPower(s, CYCLE_CONSTANT);
+    // Serial debug
+    //Serial.printf("rpm=%.1f kp=%.2f P=%.1fW rev=%u evt=%u adc=%.2f\n",  s.rpm, s.kp, s.power_w, s.crank_revs, s.crank_evt_1024, s.adc_raw);
+
+    // Prepare workout display info
+    WorkoutDisplay wd;
+    wd.active = !workout.isStopped();
+    wd.running = workout.isRunning();
+    wd.paused = workout.isPaused();
+    wd.elapsedMs = workout.getElapsedMs();
+    wd.lapMs = workout.getCurrentLapMs();
+    wd.avgPower = workout.getTotalAvgPower();
+    wd.lapAvgPower = workout.getCurrentLapAvgPower();
+    wd.lapNumber = workout.getLapCount();
+
+    // Update display (skip if menu is open)
+    if (display && !display->isMenuOpen()) {
+      display->showPower(s, &wd);
+    }
 
     // BLE
     ble.notify(s);
+
+    // Web server
+    if (webServer) {
+      webServer->updatePowerData(s);
+    }
   }
 
+  // Yield to async web server and other tasks
+  yield();
   delay(1);
 }

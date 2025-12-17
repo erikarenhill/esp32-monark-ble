@@ -11,7 +11,7 @@ public:
 
   // IDisplay implementation
   void begin() override;
-  void showPower(const PowerSample& s, float cycleConstant) override;
+  void showPower(const PowerSample& s, const WorkoutDisplay* workout = nullptr) override;
   void showMessage(const char* line1, const char* line2) override;
 
 private:

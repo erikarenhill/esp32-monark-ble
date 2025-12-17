@@ -9,14 +9,17 @@ float MonarkCalibration::lerp(float x, float x0, float y0, float x1, float y1) {
     return y0 + t * (y1 - y0);
 }
 
-float MonarkCalibration::adcToKp(int adc) {
-    if (adc <= _adc0) return 0.0f;
-    if (adc >= _adc6) return 6.0f;
+float MonarkCalibration::adcToKp(float adc) {
+    // Below 0kp calibration point - clamp to 0
+    if (adc <= (float)_adc0) return 0.0f;
 
-    if (adc <= _adc2)
-        return lerp((float)adc, (float)_adc0, 0.0f, (float)_adc2, 2.0f);
-    else if (adc <= _adc4)
-        return lerp((float)adc, (float)_adc2, 2.0f, (float)_adc4, 4.0f);
+    // Interpolate between calibration points
+    if (adc <= (float)_adc2)
+        return lerp(adc, (float)_adc0, 0.0f, (float)_adc2, 2.0f);
+    else if (adc <= (float)_adc4)
+        return lerp(adc, (float)_adc2, 2.0f, (float)_adc4, 4.0f);
     else
-        return lerp((float)adc, (float)_adc4, 4.0f, (float)_adc6, 6.0f);
+        // For adc > _adc4, extrapolate using the 4-6kp slope
+        // This allows readings beyond 6kp
+        return lerp(adc, (float)_adc4, 4.0f, (float)_adc6, 6.0f);
 }

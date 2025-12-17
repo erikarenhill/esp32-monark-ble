@@ -85,11 +85,19 @@ void NS2009::Calibrate (int _MinX, int _MaxX, int _MinY, int _MaxY)
 
 bool NS2009::CheckTouched ()
 {
+  int retries = 3;
   do
   {
     RawZ = ReadRegister(NS2009_READ_Z);
+    retries--;
   }
-  while (RawZ == 0xFFF);  // sometimes the I2C reading gives a false positive by returning only ones ==> 0xFFF = 4095
+  while (RawZ == 0xFFF && retries > 0);  // Max 3 retries to avoid blocking
+
+  if (RawZ == 0xFFF) {
+    Touched = false;  // Assume not touched if read failed
+    return false;
+  }
+
   Touched = (RawZ > THRESHOLD_Z);
   return Touched;
 }

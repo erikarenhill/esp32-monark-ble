@@ -17,9 +17,9 @@ private:
     enum State {
         IDLE,
         WAIT_0KP,
-        WAIT_2KP,
-        WAIT_4KP,
         WAIT_6KP,
+        WAIT_4KP,
+        WAIT_2KP,
         DONE
     };
 
@@ -44,7 +44,7 @@ private:
     uint32_t _doneStartTime = 0;
 
     void handleButtonPress();
-    int readAdcAvg();
+    float readAdcAvg();  // Returns float for precision, round when storing
     void showState();
     void saveAndApply();
 };
