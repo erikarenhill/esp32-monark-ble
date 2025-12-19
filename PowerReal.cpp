@@ -4,6 +4,13 @@
 // Number of samples for single ADC read (noise reduction)
 static const uint8_t ADC_SAMPLES = 8;
 
+// Voltage divider configuration (for raw ADC calculation)
+static const float R1_KOHM = 4.7f;   // Top resistor (to Vin)
+static const float R2_KOHM = 10.0f;  // Bottom resistor (to GND)
+static const float DIVIDER_RATIO = (R1_KOHM + R2_KOHM) / R2_KOHM;  // 1.47
+static const float ADC_VREF_MV = 3300.0f;  // ESP32 reference voltage
+static const float ADC_MAX_RAW = 4095.0f;  // 12-bit ADC
+
 // Cadence tuning
 static const uint32_t EDGE_DEBOUNCE_MS   = 12;
 static const uint32_t MIN_REV_PERIOD_MS  = 200;
@@ -20,7 +27,8 @@ static volatile uint32_t ts_buf[TS_BUF_SIZE];
 static volatile uint8_t  ts_head = 0;
 static volatile uint8_t  ts_count = 0;
 
-static volatile uint32_t last_edge_ms = 0;
+static volatile uint32_t last_falling_ms = 0;  // Debounce for falling edges (switch closing)
+static volatile uint32_t last_rising_ms = 0;   // Debounce for rising edges (switch opening)
 static volatile uint32_t last_rev_ms = 0;
 static volatile bool armed_for_count = true;
 static volatile uint32_t total_revs = 0; // Cumulative revolutions
@@ -32,29 +40,32 @@ static inline void push_timestamp(uint32_t t_ms) {
   if (ts_count < TS_BUF_SIZE) ts_count++;
 }
 
-// ISR
+// ISR - debounce rising and falling edges independently to prevent missed readings
 void IRAM_ATTR cadenceISR() {
   isr_calls++;  // Debug: count every ISR call
   uint32_t now = millis();
-
-  if ((now - last_edge_ms) < EDGE_DEBOUNCE_MS) return;
-  last_edge_ms = now;
-
   bool isClosed = (digitalRead(g_pin_cadence) == LOW);
 
-  if (!isClosed) {
+  if (isClosed) {
+    // Falling edge (switch closing) - debounce independently
+    if ((now - last_falling_ms) < EDGE_DEBOUNCE_MS) return;
+    last_falling_ms = now;
+
+    if (!armed_for_count) return;
+    armed_for_count = false;
+
+    if (last_rev_ms != 0 && (now - last_rev_ms) < MIN_REV_PERIOD_MS) return;
+
+    last_rev_ms = now;
+    total_revs++;
+    push_timestamp(now);
+  } else {
+    // Rising edge (switch opening) - debounce independently
+    if ((now - last_rising_ms) < EDGE_DEBOUNCE_MS) return;
+    last_rising_ms = now;
+
     armed_for_count = true;
-    return;
   }
-
-  if (!armed_for_count) return;
-  armed_for_count = false;
-
-  if (last_rev_ms != 0 && (now - last_rev_ms) < MIN_REV_PERIOD_MS) return;
-
-  last_rev_ms = now;
-  total_revs++;
-  push_timestamp(now);
 }
 
 // ------------------ Class Implementation ------------------
@@ -68,16 +79,45 @@ void PowerReal::begin() {
   pinMode(pin_cadence, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(pin_cadence), cadenceISR, CHANGE);
   Serial.printf("Cadence pin %d initialized\n", pin_cadence);
+
+  // Configure ADC for potentiometer reading
+  analogSetPinAttenuation(pin_adc, ADC_11db);  // Full range ~0-2.6V
+  Serial.printf("ADC pin %d configured with 11dB attenuation\n", pin_adc);
+
+  // Pre-fill ADC buffer to avoid startup delay
+  for (uint8_t i = 0; i < ADC_BUF_SIZE; i++) {
+    adcBuffer[i] = readAdcRaw();
+  }
+  adcBufferCount = ADC_BUF_SIZE;
+  Serial.println("ADC buffer pre-filled");
 }
 
 float PowerReal::readAdcRaw() {
-  // Quick multi-sample read for noise reduction, returns float for precision
+  // Quick multi-sample read for noise reduction, returns calibrated millivolts
+  // Discard first 2 readings to avoid spikes from ADC settling
+  analogReadMilliVolts(pin_adc);
+  analogReadMilliVolts(pin_adc);
+
   float sum = 0.0f;
   for (uint8_t i = 0; i < ADC_SAMPLES; i++) {
-    sum += (float)analogRead(pin_adc);
+    sum += (float)analogReadMilliVolts(pin_adc);
   }
   yield();  // Let other tasks run
   return sum / (float)ADC_SAMPLES;
+}
+
+/* static */ float PowerReal::millivoltsToRawAdc(float mv) {
+  // Convert measured millivolts back to equivalent raw ADC value (0-4095)
+  // accounting for voltage divider: Vin = Vout * (R1+R2)/R2
+  float vin_mv = mv * DIVIDER_RATIO;
+  return (vin_mv / ADC_VREF_MV) * ADC_MAX_RAW;
+}
+
+/* static */ float PowerReal::rawAdcToMillivolts(float raw) {
+  // Convert raw ADC value (0-4095) to millivolts at ADC pin
+  // accounting for voltage divider: Vout = Vin * R2/(R1+R2)
+  float vin_mv = (raw / ADC_MAX_RAW) * ADC_VREF_MV;
+  return vin_mv / DIVIDER_RATIO;
 }
 
 void PowerReal::sampleAdc(uint32_t now_ms) {

@@ -20,10 +20,14 @@ bool CalibrationProcess::isCalibrating() const {
 }
 
 float CalibrationProcess::readAdcAvg() {
-    // Quick 8-sample average - RC filter handles smoothing
+    // Quick 8-sample average - RC filter handles smoothing, returns calibrated millivolts
+    // Discard first 2 readings to avoid spikes from ADC settling
+    analogReadMilliVolts(_adcPin);
+    analogReadMilliVolts(_adcPin);
+
     float sum = 0.0f;
     for (int i = 0; i < 8; i++) {
-        sum += (float)analogRead(_adcPin);
+        sum += (float)analogReadMilliVolts(_adcPin);
     }
     yield();
     return sum / 8.0f;

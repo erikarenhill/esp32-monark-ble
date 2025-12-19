@@ -63,4 +63,7 @@ private:
     void handleCalibrationStart(AsyncWebServerRequest* request);
     void handleCalibrationNext(AsyncWebServerRequest* request);
     void handleCalibrationCancel(AsyncWebServerRequest* request);
+
+    // OTA Update
+    void handleUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final);
 };

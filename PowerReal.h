@@ -4,8 +4,8 @@
 #include <Arduino.h>
 
 // ADC sampling: 3Hz, report 1-second average (3 samples)
-static const uint8_t ADC_BUF_SIZE = 3;
-static const uint32_t ADC_SAMPLE_INTERVAL_MS = 333;  // 3Hz sampling
+static const uint8_t ADC_BUF_SIZE = 10;
+static const uint32_t ADC_SAMPLE_INTERVAL_MS = 100;  // 10Hz sampling
 
 class PowerReal : public PowerSource {
 public:
@@ -15,6 +15,10 @@ public:
   void update(uint32_t now_ms) override;
   bool hasSample() const override;
   PowerSample getSample() override;
+
+  // Voltage divider conversion utilities (4.7k + 10k divider)
+  static float millivoltsToRawAdc(float mv);   // mV at ADC pin -> raw ADC (0-4095)
+  static float rawAdcToMillivolts(float raw);  // raw ADC (0-4095) -> mV at ADC pin
 
 private:
   float cycle_constant;

@@ -1,4 +1,5 @@
 #include "PowerWebServer.h"
+#include <Update.h>
 
 PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin)
     : _server(80), _settings(settings), _calibration(calibration), _adcPin(adcPin) {
@@ -6,10 +7,14 @@ PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* cal
 }
 
 float PowerWebServer::readAdcQuick() {
-    // Quick ADC read (8 samples)
+    // Quick ADC read (8 samples), returns calibrated millivolts
+    // Discard first 2 readings to avoid spikes from ADC settling
+    analogReadMilliVolts(_adcPin);
+    analogReadMilliVolts(_adcPin);
+
     float sum = 0.0f;
     for (int i = 0; i < 8; i++) {
-        sum += (float)analogRead(_adcPin);
+        sum += (float)analogReadMilliVolts(_adcPin);
     }
     yield();  // Let other tasks run
     return sum / 8.0f;
@@ -27,6 +32,7 @@ float PowerWebServer::readAdcSmoothed() {
     for (uint8_t i = 0; i < _calAdcCount; i++) {
         sum += _calAdcBuffer[i];
     }
+    yield();  // Let other tasks run
     return sum / (float)_calAdcCount;
 }
 
@@ -40,6 +46,12 @@ float PowerWebServer::readAdcAvg() {
 void PowerWebServer::begin(const char* apPassword) {
     _deviceName = _settings->loadDeviceName("MonarkPower");
     _apPassword = apPassword;
+
+    // Pre-fill ADC buffer to avoid startup delay
+    for (uint8_t i = 0; i < 20; i++) {
+        _calAdcBuffer[i] = readAdcQuick();
+    }
+    _calAdcCount = 20;
 
     // Try to connect to saved WiFi first
     if (!tryConnectWiFi()) {
@@ -252,6 +264,20 @@ void PowerWebServer::setupRoutes() {
         handleCalibrationCancel(request);
     });
 
+    // OTA Update
+    _server.on("/update", HTTP_POST, [&](AsyncWebServerRequest *request){
+        bool shouldReboot = !Update.hasError();
+        AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", shouldReboot ? "OK" : "FAIL");
+        response->addHeader("Connection", "close");
+        request->send(response);
+        if(shouldReboot){
+            delay(100);
+            ESP.restart();
+        }
+    }, [&](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+        handleUpdate(request, filename, index, data, len, final);
+    });
+
     // Simple web page
     _server.on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
         String html = R"rawhtml(
@@ -377,6 +403,17 @@ void PowerWebServer::setupRoutes() {
         <p style="font-size:12px;color:#888;">Restart required for cycle constant change</p>
     </div>
 
+    <div class="card">
+        <h2>Firmware Update</h2>
+        <form method='POST' action='/update' enctype='multipart/form-data'>
+            <label>Select Firmware File (.bin)<br>
+                <input type='file' name='update' accept='.bin'>
+            </label>
+            <button type='submit'>Update Firmware</button>
+        </form>
+        <p style="font-size:12px;color:#888;">Device will restart automatically after update.</p>
+    </div>
+
     <div class="card" style="text-align:center;">
         <h2>Device Control</h2>
         <button onclick="rebootDevice()" style="background:#e94560;padding:20px 40px;font-size:18px;">Reboot Device</button>
@@ -385,6 +422,9 @@ void PowerWebServer::setupRoutes() {
     </div>
 
     <script>
+        // Track calibration state to avoid overwriting manual edits
+        let lastCalStep = -1;
+
         // Single unified status fetch at 1Hz
         async function fetchStatus() {
             try {
@@ -433,8 +473,12 @@ void PowerWebServer::setupRoutes() {
                 document.getElementById('calStartBtn').style.display = 'inline-block';
                 document.getElementById('calNextBtn').style.display = 'none';
                 document.getElementById('calCancelBtn').style.display = 'none';
-                fetchCalibration();
+                // Only fetch calibration once when transitioning to step 5
+                if (lastCalStep !== 5) {
+                    fetchCalibration();
+                }
             }
+            lastCalStep = stepNum;
         }
 
         async function fetchCalibration() {
@@ -926,3 +970,25 @@ void PowerWebServer::handleCalibrationCancel(AsyncWebServerRequest* request) {
     Serial.println("Web calibration cancelled");
     request->send(200, "application/json", "{\"success\":true,\"message\":\"Calibration cancelled\"}");
 }
+
+void PowerWebServer::handleUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {
+    if (!index) {
+        Serial.printf("Update Start: %s\n", filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+            Update.printError(Serial);
+        }
+    }
+    if (!Update.hasError()) {
+        if (Update.write(data, len) != len) {
+            Update.printError(Serial);
+        }
+    }
+    if (final) {
+        if (Update.end(true)) {
+            Serial.printf("Update Success: %uB\n", index + len);
+        } else {
+            Update.printError(Serial);
+        }
+    }
+}
+
