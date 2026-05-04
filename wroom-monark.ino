@@ -1,7 +1,13 @@
 // Display Selection
-#define DISPLAY_TYPE_LCD1602 1
-#define DISPLAY_TYPE_TFT     2
-#define DISPLAY_TO_USE 0
+#define DISPLAY_TYPE_LCD1602  1
+#define DISPLAY_TYPE_TFT      2
+#define DISPLAY_TYPE_ST7789   3
+
+#if defined(BOARD_WAVESHARE_C6_LCD_1_47)
+  #define DISPLAY_TO_USE DISPLAY_TYPE_ST7789
+#else
+  #define DISPLAY_TO_USE 0
+#endif
 
 #include <Arduino.h>
 #include "PowerSource.h"
@@ -11,6 +17,9 @@
 //#include "LcdUi1602.h"
 //#include "TftUi.h"
 //#include "Menu.h"
+#if DISPLAY_TO_USE == DISPLAY_TYPE_ST7789
+  #include "St7789Ui.h"
+#endif
 #include "Workout.h"
 #include "SettingsManager.h"
 #include "CalibrationProcess.h"
@@ -62,15 +71,20 @@ void setup() {
   Serial.flush();
 
   // Display
-  if (DISPLAY_TYPE == DISPLAY_TYPE_LCD1602) {
-  //  display = new LcdUi1602(LCD_ADDR, 16, 2, I2C_SDA_PIN, I2C_SCL_PIN);
-  } else {
-    //display = new TftUi();
-  }
+#if DISPLAY_TO_USE == DISPLAY_TYPE_ST7789
+  display = new St7789Ui();
+#elif DISPLAY_TO_USE == DISPLAY_TYPE_LCD1602
+  // display = new LcdUi1602(LCD_ADDR, 16, 2, I2C_SDA_PIN, I2C_SCL_PIN);
+#elif DISPLAY_TO_USE == DISPLAY_TYPE_TFT
+  // display = new TftUi();
+#endif
   if (display) {
     display->begin();
+    display->showMessage("Monark", "Starting...");
+    Serial.println("Display OK");
+  } else {
+    Serial.println("Display OK (null)");
   }
-  Serial.println("Display OK (null)");
   Serial.flush();
 
   // Load calibration (needed for both sim and real)
@@ -229,8 +243,11 @@ void loop() {
       workout.addPowerSample(s.power_w);
     }
 
-    // Serial debug
-    //Serial.printf("rpm=%.1f kp=%.2f P=%.1fW rev=%u evt=%u adc=%.2f\n",  s.rpm, s.kp, s.power_w, s.crank_revs, s.crank_evt_1024, s.adc_raw);
+    // Per-sample debug — one line per second, easy to grep / tail.
+    Serial.printf("SAMPLE rpm=%.1f kp=%.2f P=%.1fW adc=%.0f rev=%u evt=%u up=%lus heap=%u\n",
+                  s.rpm, s.kp, s.power_w, s.adc_raw,
+                  s.crank_revs, s.crank_evt_1024,
+                  (unsigned long)(now / 1000), (unsigned)ESP.getFreeHeap());
 
     // Prepare workout display info
     WorkoutDisplay wd;

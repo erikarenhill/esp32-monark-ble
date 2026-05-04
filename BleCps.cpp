@@ -1,5 +1,7 @@
 #include "BleCps.h"
+#include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <NimBLEAdvertising.h>
 
 // Cycling Power Service and characteristics
 static NimBLECharacteristic* ch_measurement = nullptr;
@@ -51,7 +53,8 @@ void BleCps::begin(const char* deviceName) {
   ch_measurement =
       cps->createCharacteristic(NimBLEUUID((uint16_t)CPM_UUID16), NIMBLE_PROPERTY::NOTIFY);
 
-  cps->start();
+  // NimBLE 2.x: services are started by the server, not individually.
+  server->start();
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(NimBLEUUID((uint16_t)CPS_UUID16));
