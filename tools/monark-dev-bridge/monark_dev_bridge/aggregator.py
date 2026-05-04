@@ -53,6 +53,13 @@ class Aggregator:
             return None
         return real.power_w - esp.power_w
 
+    def diff_rpm(self) -> float | None:
+        real = self._latest.get("real_power")
+        esp = self._latest.get("esp32")
+        if real is None or esp is None or real.cadence_rpm is None or esp.cadence_rpm is None:
+            return None
+        return real.cadence_rpm - esp.cadence_rpm
+
     def snapshot(self, now: float | None = None) -> dict:
         """Compact JSON-friendly view used by /api/state."""
         now = now if now is not None else time.time()
@@ -69,5 +76,6 @@ class Aggregator:
         return {
             "latest": latest,
             "diff_w": self.diff_w(),
+            "diff_rpm": self.diff_rpm(),
             "updated_at": now,
         }

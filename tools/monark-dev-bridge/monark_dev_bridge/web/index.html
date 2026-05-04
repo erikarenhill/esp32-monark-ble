@@ -8,7 +8,7 @@
     body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; background: #0e1116; color: #e6edf3; }
     header { padding: 14px 18px; border-bottom: 1px solid #2a313a; display: flex; align-items: baseline; gap: 14px; }
     h1 { font-size: 16px; margin: 0; letter-spacing: 0.02em; }
-    main { padding: 18px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    main { padding: 18px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
     .tile { background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 14px 16px; }
     .tile .label { font-size: 11px; text-transform: uppercase; color: #7d8590; letter-spacing: 0.08em; }
     .tile .value { font-size: 32px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
@@ -16,6 +16,7 @@
     .stale .value { color: #6e7681; }
     .chartbox { grid-column: 1 / -1; background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 8px; }
     .row { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    @media (max-width: 900px) { main { grid-template-columns: repeat(2, 1fr); } }
     .conn { background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 10px 14px; font-size: 13px; }
     .conn .role { font-weight: 600; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
@@ -40,7 +41,13 @@
   <main>
     <div class="tile" id="tile-real"><div class="label">Real pedals — power</div><div class="value">—</div><div class="sub"></div></div>
     <div class="tile" id="tile-esp"><div class="label">ESP32 — power</div><div class="value">—</div><div class="sub"></div></div>
-    <div class="tile" id="tile-diff"><div class="label">Δ (real − esp32)</div><div class="value">—</div><div class="sub">W</div></div>
+    <div class="tile" id="tile-diff"><div class="label">Δ power (real − esp32)</div><div class="value">—</div><div class="sub">W</div></div>
+    <div class="tile" id="tile-hr"><div class="label">Heart rate</div><div class="value">—</div><div class="sub"></div></div>
+
+    <div class="tile" id="tile-real-rpm"><div class="label">Real pedals — cadence</div><div class="value">—</div><div class="sub">rpm</div></div>
+    <div class="tile" id="tile-esp-rpm"><div class="label">ESP32 — cadence</div><div class="value">—</div><div class="sub">rpm</div></div>
+    <div class="tile" id="tile-diff-rpm"><div class="label">Δ cadence (real − esp32)</div><div class="value">—</div><div class="sub">rpm</div></div>
+    <div class="tile" id="tile-spacer" style="visibility:hidden"></div>
 
     <div class="row">
       <div class="conn" id="conn-real_power"><span class="role">real_power</span> <span class="badge disconnected">—</span> <span class="addr"></span></div>
@@ -49,6 +56,8 @@
     </div>
 
     <div class="chartbox"><div id="chart"></div></div>
+    <div class="chartbox"><div id="chart-rpm"></div></div>
+    <div class="chartbox"><div id="chart-hr"></div></div>
 
     <div class="scan">
       <button id="scan-btn">Scan (10s)</button>
@@ -57,6 +66,24 @@
         <thead><tr><th>Name</th><th>Address</th><th>RSSI</th><th>Services</th><th>Bind to</th></tr></thead>
         <tbody></tbody>
       </table>
+    </div>
+
+    <div class="scan" id="cal-panel">
+      <strong style="font-size:13px;">Tune cycle constant</strong>
+      <span style="color:#7d8590; font-size:12px; margin-left:8px;">
+        — pedal at any steady load, real pedals = ground truth, no weights needed
+      </span>
+      <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <label style="font-size:12px; color:#7d8590;">Current cycle constant
+          <input id="cal-current" type="number" step="0.01" value="1.05" style="width:70px; margin-left:4px; background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:4px; padding:3px 6px;">
+        </label>
+        <label style="font-size:12px; color:#7d8590;">Duration (s)
+          <input id="cal-duration" type="number" min="5" max="300" value="30" style="width:60px; margin-left:4px; background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:4px; padding:3px 6px;">
+        </label>
+        <button id="cal-btn">Start tuning</button>
+        <span id="cal-status" style="color:#7d8590; font-size:12px;"></span>
+      </div>
+      <div id="cal-result" style="margin-top:10px; display:none; font-size:13px; background:#0d1117; border:1px solid #30363d; border-radius:6px; padding:10px;"></div>
     </div>
   </main>
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from monark_dev_bridge import config as cfgmod
+from monark_dev_bridge import tcx as tcxmod
 from monark_dev_bridge.aggregator import ROLES, Aggregator, Role, Sample
 from monark_dev_bridge.ble.client import RoleClient
 from monark_dev_bridge.ble.scanner import scan as ble_scan
@@ -185,5 +187,107 @@ def build_app(cfg_path: Path) -> FastAPI:
     @app.websocket("/api/stream")
     async def stream(ws: WebSocket) -> None:
         await bridge.attach_ws(ws)
+
+    # ---- session export (Garmin Connect TCX) -------------------------------
+
+    def _build_tcx_for(which: str) -> str:
+        log_path = Path(bridge.cfg.log_path)
+        all_samples = tcxmod.read_samples(log_path)
+        if which == "real":
+            power = [s for s in all_samples if s.get("role") == "real_power"]
+            hr = [s for s in all_samples if s.get("role") == "hr"]
+            merged = tcxmod.merge_power_with_hr(power, hr)
+            return tcxmod.build_tcx(merged, activity_name="Monark — real pedals + HR")
+        if which == "esp32":
+            esp = [s for s in all_samples if s.get("role") == "esp32"]
+            return tcxmod.build_tcx(esp, activity_name="Monark — ESP32 firmware")
+        raise HTTPException(404, f"unknown export target: {which}")
+
+    @app.get("/api/session/real.tcx")
+    async def session_real_tcx():
+        from fastapi.responses import Response
+        body = _build_tcx_for("real")
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        return Response(
+            content=body, media_type="application/vnd.garmin.tcx+xml",
+            headers={"Content-Disposition": f'attachment; filename="monark-real-{ts}.tcx"'},
+        )
+
+    @app.get("/api/session/esp32.tcx")
+    async def session_esp32_tcx():
+        from fastapi.responses import Response
+        body = _build_tcx_for("esp32")
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        return Response(
+            content=body, media_type="application/vnd.garmin.tcx+xml",
+            headers={"Content-Disposition": f'attachment; filename="monark-esp32-{ts}.tcx"'},
+        )
+
+    # ---- cycle-constant tuning ---------------------------------------------
+    # Hold steady for N seconds; we average power from both real pedals and the
+    # ESP32 over that window and return the multiplier needed to make the firmware
+    # match reality:  new_constant = current_constant * (real_avg / esp32_avg)
+
+    @app.post("/api/calibrate/cycle-constant")
+    async def calibrate_cycle_constant(payload: dict):
+        from fastapi.responses import JSONResponse as JR
+        duration_s = float(payload.get("duration_s", 30))
+        current = float(payload.get("current_constant", 1.05))
+        if duration_s < 5 or duration_s > 300:
+            raise HTTPException(400, "duration_s must be 5..300")
+
+        start = time.time()
+        end = start + duration_s
+        real_sum = 0.0
+        real_n = 0
+        esp_sum = 0.0
+        esp_n = 0
+        # Snapshot the current "latest" tick periodically. The aggregator updates
+        # on every BLE notify (~1 Hz per role), so 5 Hz polling here is plenty.
+        seen_real_ts: set[float] = set()
+        seen_esp_ts: set[float] = set()
+        while time.time() < end:
+            r = bridge.aggregator.latest("real_power")
+            e = bridge.aggregator.latest("esp32")
+            if r and r.power_w is not None and r.ts not in seen_real_ts:
+                seen_real_ts.add(r.ts)
+                real_sum += r.power_w
+                real_n += 1
+            if e and e.power_w is not None and e.ts not in seen_esp_ts:
+                seen_esp_ts.add(e.ts)
+                esp_sum += e.power_w
+                esp_n += 1
+            await asyncio.sleep(0.2)
+
+        if real_n < 3 or esp_n < 3:
+            return JR({
+                "ok": False,
+                "error": "not enough samples — make sure both real_power and esp32 are connected and pedaling steadily",
+                "real_samples": real_n,
+                "esp32_samples": esp_n,
+            }, status_code=400)
+
+        real_avg = real_sum / real_n
+        esp_avg = esp_sum / esp_n
+        if esp_avg <= 0:
+            return JR({"ok": False, "error": "ESP32 average power is 0; pedal harder?"}, status_code=400)
+
+        ratio = real_avg / esp_avg
+        suggested = current * ratio
+        return JR({
+            "ok": True,
+            "duration_s": duration_s,
+            "current_constant": current,
+            "real_avg_w": round(real_avg, 1),
+            "esp32_avg_w": round(esp_avg, 1),
+            "ratio_real_over_esp32": round(ratio, 4),
+            "suggested_constant": round(suggested, 3),
+            "real_samples": real_n,
+            "esp32_samples": esp_n,
+            "note": (
+                "Plug 'suggested_constant' into Cycle Constant on the device's "
+                "calibration page (http://192.168.4.1) and save. No reboot needed."
+            ),
+        })
 
     return app
