@@ -1,0 +1,18 @@
+# Created by `monark-dev-bridge scan` and the dashboard's Scan panel.
+# You can also edit by hand. Each role accepts `address` (preferred) and/or `name`.
+
+[server]
+port = 8765
+log_path = "bridge.log"
+
+[devices.real_power]
+# address = "AA:BB:CC:DD:EE:FF"
+# name = "Assioma"
+
+[devices.hr]
+# address = "AA:BB:CC:DD:EE:FF"
+# name = "Polar H10"
+
+[devices.esp32]
+# address = "AA:BB:CC:DD:EE:FF"
+# name = "MonarkPower"

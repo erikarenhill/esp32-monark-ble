@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>monark-dev-bridge</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" />
+  <style>
+    body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; background: #0e1116; color: #e6edf3; }
+    header { padding: 14px 18px; border-bottom: 1px solid #2a313a; display: flex; align-items: baseline; gap: 14px; }
+    h1 { font-size: 16px; margin: 0; letter-spacing: 0.02em; }
+    main { padding: 18px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .tile { background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 14px 16px; }
+    .tile .label { font-size: 11px; text-transform: uppercase; color: #7d8590; letter-spacing: 0.08em; }
+    .tile .value { font-size: 32px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .tile .sub { font-size: 12px; color: #7d8590; margin-top: 2px; }
+    .stale .value { color: #6e7681; }
+    .chartbox { grid-column: 1 / -1; background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 8px; }
+    .row { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+    .conn { background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 10px 14px; font-size: 13px; }
+    .conn .role { font-weight: 600; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+    .badge.connected { background: #1f3b29; color: #56d364; }
+    .badge.connecting, .badge.reconnecting { background: #3b3017; color: #d4a72c; }
+    .badge.disconnected { background: #3b1f25; color: #f85149; }
+    .scan { grid-column: 1 / -1; background: #161b22; border: 1px solid #2a313a; border-radius: 8px; padding: 14px; }
+    .scan button { background: #238636; color: white; border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .scan button:disabled { background: #30363d; color: #7d8590; cursor: wait; }
+    .scan table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+    .scan th, .scan td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #21262d; }
+    .scan td button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; padding: 3px 8px; margin-right: 4px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    .scan td button:hover { border-color: #58a6ff; }
+    code { background: #21262d; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>monark-dev-bridge</h1>
+    <span style="color:#7d8590; font-size:12px;">poll <code>/api/state</code> · stream <code>/api/stream</code> · log <code>bridge.log</code></span>
+  </header>
+  <main>
+    <div class="tile" id="tile-real"><div class="label">Real pedals — power</div><div class="value">—</div><div class="sub"></div></div>
+    <div class="tile" id="tile-esp"><div class="label">ESP32 — power</div><div class="value">—</div><div class="sub"></div></div>
+    <div class="tile" id="tile-diff"><div class="label">Δ (real − esp32)</div><div class="value">—</div><div class="sub">W</div></div>
+
+    <div class="row">
+      <div class="conn" id="conn-real_power"><span class="role">real_power</span> <span class="badge disconnected">—</span> <span class="addr"></span></div>
+      <div class="conn" id="conn-hr"><span class="role">hr</span> <span class="badge disconnected">—</span> <span class="addr"></span></div>
+      <div class="conn" id="conn-esp32"><span class="role">esp32</span> <span class="badge disconnected">—</span> <span class="addr"></span></div>
+    </div>
+
+    <div class="chartbox"><div id="chart"></div></div>
+
+    <div class="scan">
+      <button id="scan-btn">Scan (10s)</button>
+      <span style="margin-left:12px; color:#7d8590;" id="scan-status"></span>
+      <table id="scan-table" style="display:none">
+        <thead><tr><th>Name</th><th>Address</th><th>RSSI</th><th>Services</th><th>Bind to</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+  <script src="/web/app.js"></script>
+</body>
+</html>
