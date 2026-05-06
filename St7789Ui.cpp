@@ -22,6 +22,13 @@ static constexpr uint16_t COL_FG     = 0xFFFF; // white
 static constexpr uint16_t COL_LABEL  = 0x7BEF; // grey
 static constexpr uint16_t COL_POWER  = 0x07FF; // cyan-ish
 static constexpr uint16_t COL_RPM    = 0xFFE0; // yellow
+static constexpr uint16_t COL_STATUS = 0x528A; // dim grey (so the IP doesn't fight POWER for attention)
+
+// Backlight PWM. 180/255 ≈ 70% — comfortable indoors, still readable. Bump if
+// the bike is in direct sun.
+static constexpr uint32_t BL_FREQ_HZ  = 5000;
+static constexpr uint8_t  BL_RES_BITS = 8;
+static constexpr uint8_t  BL_DUTY     = 180;
 
 St7789Ui::St7789Ui() = default;
 
@@ -31,8 +38,11 @@ St7789Ui::~St7789Ui() {
 }
 
 void St7789Ui::begin() {
-  pinMode(PIN_BL, OUTPUT);
-  digitalWrite(PIN_BL, LOW);  // backlight off until we're ready
+  // Backlight via LEDC PWM so we can run it dimmer than full-bright. Attaching
+  // also implicitly puts the pin in OUTPUT mode; start at 0 (off) until the
+  // panel is initialised, then ramp to BL_DUTY.
+  ledcAttach(PIN_BL, BL_FREQ_HZ, BL_RES_BITS);
+  ledcWrite(PIN_BL, 0);
 
   _bus = new Arduino_ESP32SPI(
       PIN_DC, PIN_CS, PIN_SCK, PIN_MOSI, GFX_NOT_DEFINED /* MISO */);
@@ -52,10 +62,22 @@ void St7789Ui::begin() {
   _gfx->fillScreen(COL_BG);
   _gfx->invertDisplay(true); // BGR + inversion-on per the panel's setup
 
-  digitalWrite(PIN_BL, HIGH); // backlight on
+  ledcWrite(PIN_BL, BL_DUTY); // backlight at dimmed level
   _ready = true;
 
   drawStaticChrome();
+}
+
+void St7789Ui::drawStatusBar() {
+  if (!_ready) return;
+  // 8-row band at the very top, redrawn from blank each time so a shorter
+  // string (e.g. "AP 192.168.4.1" → "10.0.0.5") doesn't leave trailing chars.
+  _gfx->fillRect(0, 0, PANEL_W, 10, COL_BG);
+  if (_status[0] == '\0') return;
+  _gfx->setTextColor(COL_STATUS, COL_BG);
+  _gfx->setTextSize(1);
+  _gfx->setCursor(4, 1);
+  _gfx->print(_status);
 }
 
 void St7789Ui::drawStaticChrome() {
@@ -63,8 +85,10 @@ void St7789Ui::drawStaticChrome() {
 
   _gfx->setTextWrap(false);
 
-  // POWER label
-  _gfx->setCursor(8, 6);
+  drawStatusBar();
+
+  // POWER label — pushed down 8px to make room for the status bar above.
+  _gfx->setCursor(8, 14);
   _gfx->setTextColor(COL_LABEL, COL_BG);
   _gfx->setTextSize(2);
   _gfx->print("POWER");
@@ -104,9 +128,9 @@ void St7789Ui::drawNumber(int x, int y, int w, int h, uint8_t textSize, const ch
 void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/) {
   if (!_ready) return;
 
-  // Re-assert backlight every tick — defends against any rogue write that
-  // toggles GPIO 22, and against the panel entering low-power mode.
-  digitalWrite(PIN_BL, HIGH);
+  // Re-assert backlight duty every tick — LEDC keeps it set across resets, but
+  // re-writing is cheap and protects against anything that detached the pin.
+  ledcWrite(PIN_BL, BL_DUTY);
 
   // Force a periodic redraw even when values are unchanged, so we never sit
   // on a stale frame if a draw was dropped (e.g., SPI glitch) or the panel
@@ -158,4 +182,12 @@ void St7789Ui::showMessage(const char* line1, const char* line2) {
   _lastPower = -9999.0f;
   _lastRpm = -1.0f;
   // Note: caller should follow up with showPower() to repaint chrome.
+}
+
+void St7789Ui::setStatus(const char* text) {
+  if (text == nullptr) text = "";
+  // Truncate to fit the buffer; the bar paints whatever fits at size-1.
+  strncpy(_status, text, sizeof(_status) - 1);
+  _status[sizeof(_status) - 1] = '\0';
+  drawStatusBar();
 }

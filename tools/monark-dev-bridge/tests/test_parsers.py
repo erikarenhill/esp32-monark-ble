@@ -73,6 +73,22 @@ def test_cps_no_crank_event_holds_last_cadence():
     assert r.cadence_rpm == pytest.approx(60.0)  # held
 
 
+def test_cps_crank_counter_reset_holds_last_cadence():
+    """ESP32 reboots mid-session: rev counter drops 100 → 0. Don't compute a
+    65436-rev sprint — treat as a counter reset, hold previous cadence, and
+    use the new value as a fresh baseline so the next sample is normal again."""
+    state = CpsParseState()
+    parse_cps(_cps_packet(0b100000, 200, struct.pack("<HH", 100, 0)), state)
+    parse_cps(_cps_packet(0b100000, 210, struct.pack("<HH", 101, CRANK_TIME_RESOLUTION_HZ)), state)
+    assert state.last_cadence_rpm == pytest.approx(60.0)
+    # ESP32 reboot — counters reset
+    r = parse_cps(_cps_packet(0b100000, 0, struct.pack("<HH", 0, 0)), state)
+    assert r.cadence_rpm == pytest.approx(60.0)  # held, not 1000s of rpm
+    # Next sample after reboot: 1 rev / 1s → 60 rpm computed against new baseline
+    r2 = parse_cps(_cps_packet(0b100000, 200, struct.pack("<HH", 1, CRANK_TIME_RESOLUTION_HZ)), state)
+    assert r2.cadence_rpm == pytest.approx(60.0)
+
+
 def test_cps_pedal_balance_offset_skipped():
     # bits 0 (balance) and 5 (crank) set
     pkt = _cps_packet(

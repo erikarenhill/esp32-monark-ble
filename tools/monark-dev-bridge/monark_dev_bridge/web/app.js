@@ -266,3 +266,50 @@ calBtn.onclick = async () => {
     calBtn.disabled = false;
   }
 };
+
+// ---- Assistant notes (chat) ------------------------------------------------
+// Polls /api/notes every 2s. Newest message on top. New messages flash briefly
+// so they catch the eye while pedaling.
+
+const notesList = document.getElementById('notes-list');
+const notesEmpty = document.getElementById('notes-empty');
+let lastNoteTs = 0;
+const seenTs = new Set();
+
+function fmtClock(ts) {
+  const d = new Date(ts * 1000);
+  return d.toTimeString().slice(0, 8);
+}
+
+function renderNote(note, isFresh) {
+  const el = document.createElement('div');
+  el.className = 'note ' + (note.kind || 'info') + (isFresh ? ' fresh' : '');
+  const ts = document.createElement('span'); ts.className = 'ts';   ts.textContent = fmtClock(note.ts);
+  const k  = document.createElement('span'); k.className  = 'kind'; k.textContent  = (note.kind || 'info').toUpperCase();
+  const t  = document.createElement('span'); t.className  = 'text'; t.textContent  = note.text;
+  el.append(ts, k, t);
+  return el;
+}
+
+async function pollNotes() {
+  try {
+    const res = await fetch('/api/notes?since=' + lastNoteTs);
+    const data = await res.json();
+    const fresh = (data.notes || []).filter(n => !seenTs.has(n.ts));
+    if (fresh.length === 0) return;
+    if (notesEmpty && notesEmpty.parentNode) notesEmpty.remove();
+    // Newest on top — sort desc, prepend.
+    fresh.sort((a, b) => b.ts - a.ts);
+    for (const n of fresh) {
+      seenTs.add(n.ts);
+      lastNoteTs = Math.max(lastNoteTs, n.ts);
+      notesList.prepend(renderNote(n, /*isFresh=*/true));
+    }
+    // Keep DOM bounded.
+    while (notesList.children.length > 60) notesList.lastElementChild.remove();
+  } catch (e) {
+    // Silent — bridge may be restarting; next poll picks up.
+  }
+}
+pollNotes();
+setInterval(pollNotes, 2000);

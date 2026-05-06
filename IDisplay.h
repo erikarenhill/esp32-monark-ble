@@ -26,6 +26,9 @@ public:
     // Show a 2-line message (used for calibration/status)
     virtual void showMessage(const char* line1, const char* line2) = 0;
 
+    // Small persistent status line (e.g. WiFi IP). Default: noop.
+    virtual void setStatus(const char* /*text*/) {}
+
     // Interaction
     virtual void update() {}
     virtual bool isActionRequested() { return false; }

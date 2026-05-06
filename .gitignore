@@ -1,3 +1,6 @@
 /datasheets/**
 .pio/
 .vscode/
+.ijfw/
+CLAUDE.md
+tools/monark-dev-bridge/session-*.tcx

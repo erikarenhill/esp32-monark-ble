@@ -1,57 +1,19 @@
 #include "PowerWebServer.h"
 #include <Update.h>
+#include <esp_wifi.h>
+#include <ESPmDNS.h>
 
 PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin)
     : _server(80), _settings(settings), _calibration(calibration), _adcPin(adcPin) {
     memset(&_lastSample, 0, sizeof(_lastSample));
 }
 
-float PowerWebServer::readAdcQuick() {
-    // Quick ADC read (8 samples), returns calibrated millivolts
-    // Discard first 2 readings to avoid spikes from ADC settling
-    analogReadMilliVolts(_adcPin);
-    analogReadMilliVolts(_adcPin);
-
-    float sum = 0.0f;
-    for (int i = 0; i < 8; i++) {
-        sum += (float)analogReadMilliVolts(_adcPin);
-    }
-    yield();  // Let other tasks run
-    return sum / 8.0f;
-}
-
-float PowerWebServer::readAdcSmoothed() {
-    // Add new quick reading to ring buffer
-    float newReading = readAdcQuick();
-    _calAdcBuffer[_calAdcHead] = newReading;
-    _calAdcHead = (_calAdcHead + 1) % 20;
-    if (_calAdcCount < 20) _calAdcCount++;
-
-    // Return average of buffer (~1 second of readings)
-    float sum = 0.0f;
-    for (uint8_t i = 0; i < _calAdcCount; i++) {
-        sum += _calAdcBuffer[i];
-    }
-    yield();  // Let other tasks run
-    return sum / (float)_calAdcCount;
-}
-
-float PowerWebServer::readAdcAvg() {
-    // Use the already-smoothed buffer (~1 second of readings)
-    // The RC filter + smoothing buffer provides stable readings
-    // No blocking needed - just return current smoothed value
-    return readAdcSmoothed();
-}
-
 void PowerWebServer::begin(const char* apPassword) {
     _deviceName = _settings->loadDeviceName("MonarkPower");
     _apPassword = apPassword;
 
-    // Pre-fill ADC buffer to avoid startup delay
-    for (uint8_t i = 0; i < 20; i++) {
-        _calAdcBuffer[i] = readAdcQuick();
-    }
-    _calAdcCount = 20;
+    // ADC reads now come from PowerReal's already-smoothed _lastSample.adc_raw,
+    // not a duplicate poller on the AsyncTCP request thread.
 
     // Try to connect to saved WiFi first
     if (!tryConnectWiFi()) {
@@ -71,13 +33,82 @@ bool PowerWebServer::tryConnectWiFi() {
         return false;
     }
 
-    Serial.printf("Connecting to WiFi: %s\n", ssid.c_str());
+    // Print first 3 + last 3 chars of password so the user can verify the saved
+    // value matches what they typed/pasted, without leaking the full secret.
+    String passPreview;
+    if (password.length() <= 6) {
+        passPreview = String("***");
+    } else {
+        passPreview = password.substring(0, 3) + String("...") + password.substring(password.length() - 3);
+    }
+    Serial.printf("Connecting to WiFi: %s (pass %d chars: %s)\n",
+                  ssid.c_str(), password.length(), passPreview.c_str());
+    WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid.c_str(), password.c_str());
+    delay(100);
+    // Disconnect AFTER mode is set so it's not a "STA not started" error at fresh boot.
+    WiFi.disconnect(false, true);
+    delay(100);
 
-    // Wait up to 10 seconds for connection
+    // Log the AP's exact disassociation reason. Common codes:
+    //   2  = AUTH_EXPIRE    | 6  = NOT_AUTHED
+    //   8  = ASSOC_LEAVE    | 15 = 4WAY_HANDSHAKE_TIMEOUT (typical wrong-password)
+    //   200= BEACON_TIMEOUT | 201= NO_AP_FOUND | 202= AUTH_FAIL
+    //   203= ASSOC_FAIL     | 204= HANDSHAKE_TIMEOUT       (also wrong-password)
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+        Serial.printf("[wifi-event] STA_DISCONNECTED reason=%d\n",
+                      info.wifi_sta_disconnected.reason);
+    }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+    // Pre-scan so we have concrete diagnostics (RSSI / channel / auth) regardless of
+    // what happens next. Cheap (~3s) and the result usually tells us why a connect
+    // fails more clearly than the WL_* status code does.
+    Serial.println("Scanning for target SSID...");
+    int n = WiFi.scanNetworks();
+    int targetIdx = -1;
+    for (int i = 0; i < n; i++) {
+        if (WiFi.SSID(i) == ssid) { targetIdx = i; break; }
+    }
+    if (targetIdx >= 0) {
+        const char* authNames[] = {"OPEN","WEP","WPA-PSK","WPA2-PSK","WPA/WPA2","WPA2-ENT","WPA3-PSK","WPA2/WPA3","WAPI","OWE","WPA3-ENT-192"};
+        int auth = (int)WiFi.encryptionType(targetIdx);
+        const char* authName = (auth >= 0 && auth < (int)(sizeof(authNames)/sizeof(authNames[0]))) ? authNames[auth] : "?";
+        Serial.printf("  visible: RSSI=%ddBm channel=%d auth=%s (raw=%d)\n",
+                      WiFi.RSSI(targetIdx), WiFi.channel(targetIdx), authName, auth);
+    } else {
+        Serial.printf("  '%s' NOT visible in scan (%d networks seen). Will still try begin().\n",
+                      ssid.c_str(), n);
+    }
+    WiFi.scanDelete();
+
+    // Power-save can cause silent disconnects on weak/marginal links — turn it off.
+    WiFi.setSleep(false);
+    // Allow WPA-PSK so APs running mixed-mode security still work.
+    WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
+
+    // CRITICAL for ESP32-C6 + WPA2/WPA3 mixed-mode routers (and some plain WPA2
+    // APs with PMF Required): disable 802.11ax (WiFi 6 / HE) on the STA radio.
+    // The C6 advertises HE capabilities by default and some APs reject the
+    // association silently, producing repeated reason=2 (AUTH_EXPIRE) loops.
+    // Restricting to b/g/n forces a legacy capability set everyone speaks.
+    esp_wifi_set_protocol(WIFI_IF_STA,
+        WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+
+    // Build the STA config manually so we can force PMF off — ESP32-C6 advertises
+    // PMF-capable by default and some WPA2-only routers drop those association
+    // requests.
+    wifi_config_t wcfg = {};
+    strncpy((char*)wcfg.sta.ssid, ssid.c_str(), sizeof(wcfg.sta.ssid) - 1);
+    strncpy((char*)wcfg.sta.password, password.c_str(), sizeof(wcfg.sta.password) - 1);
+    wcfg.sta.pmf_cfg.capable = false;
+    wcfg.sta.pmf_cfg.required = false;
+    wcfg.sta.threshold.authmode = WIFI_AUTH_WPA_PSK;
+    esp_wifi_set_config(WIFI_IF_STA, &wcfg);
+    esp_wifi_connect();
+
+    // Wait up to 25 seconds for connection (some routers + WPA3-mixed are slow to associate).
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 50) {
         delay(500);
         Serial.print(".");
         attempts++;
@@ -88,10 +119,22 @@ bool PowerWebServer::tryConnectWiFi() {
         _isAPMode = false;
         Serial.print("Connected to WiFi. IP: ");
         Serial.println(WiFi.localIP());
+        // Advertise via mDNS so the user can reach the device by name from any
+        // host on the same LAN: http://MonarkPower.local/  (lowercase, no underscores).
+        if (MDNS.begin(_deviceName.c_str())) {
+            MDNS.addService("http", "tcp", 80);
+            Serial.printf("mDNS: http://%s.local/\n", _deviceName.c_str());
+        } else {
+            Serial.println("mDNS start failed");
+        }
         return true;
     }
 
-    Serial.println("WiFi connection failed");
+    // Print the specific status so we can tell the failure mode at a glance:
+    //   1 = WL_NO_SSID_AVAIL (SSID not found / out of range)
+    //   4 = WL_CONNECT_FAILED (auth rejected — wrong password)
+    //   6 = WL_DISCONNECTED   (no AP / DHCP timeout)
+    Serial.printf("WiFi connection failed (status=%d)\n", (int)WiFi.status());
     WiFi.disconnect();
     return false;
 }
@@ -118,6 +161,12 @@ void PowerWebServer::startAPMode() {
         Serial.println(_apPassword);
         Serial.print("IP Address: ");
         Serial.println(WiFi.softAPIP());
+        // mDNS works in soft-AP mode too, so a client joined to MonarkPower can
+        // reach the device by name instead of memorising 192.168.4.1.
+        if (MDNS.begin(_deviceName.c_str())) {
+            MDNS.addService("http", "tcp", 80);
+            Serial.printf("mDNS: http://%s.local/\n", _deviceName.c_str());
+        }
     } else {
         Serial.println("ERROR: Failed to start WiFi AP!");
     }
@@ -239,10 +288,10 @@ void PowerWebServer::setupRoutes() {
         doc["adc"] = _lastSample.adc_raw;
 
         // Calibration state
-        const char* calStates[] = {"idle", "0kp", "6kp", "4kp", "2kp", "done"};
+        const char* calStates[] = {"idle", "0kp", "2kp", "4kp", "6kp", "done"};
         doc["cal"]["state"] = calStates[_calState];
         doc["cal"]["step"] = (int)_calState;
-        doc["cal"]["adc"] = readAdcSmoothed();
+        doc["cal"]["adc"] = _lastSample.adc_raw;
         doc["cal"]["values"]["adc0"] = _calValues[0];
         doc["cal"]["values"]["adc2"] = _calValues[1];
         doc["cal"]["values"]["adc4"] = _calValues[2];
@@ -284,6 +333,7 @@ void PowerWebServer::setupRoutes() {
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
     <title>Monark Power</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
@@ -359,7 +409,7 @@ void PowerWebServer::setupRoutes() {
             <input type="text" id="wifiSSID" maxlength="32" placeholder="Your WiFi network">
         </label>
         <label>Password<br>
-            <input type="password" id="wifiPass" maxlength="63" placeholder="WiFi password">
+            <input type="password" id="wifiPass" maxlength="63" placeholder="(blank = keep existing password)">
         </label>
         <button onclick="saveWiFi()">Connect to WiFi</button>
         <button onclick="clearWiFi()" style="background:#e94560;margin-left:10px;">Use AP Mode</button>
@@ -444,7 +494,7 @@ void PowerWebServer::setupRoutes() {
 
         function updateCalibrationUI(cal) {
             const stepNum = cal.step;
-            const kpOrder = [0, 0, 6, 4, 2, 0];
+            const kpOrder = [0, 0, 2, 4, 6, 0];
 
             // Only show live ADC when actively calibrating
             if (stepNum >= 1 && stepNum <= 4) {
@@ -456,7 +506,7 @@ void PowerWebServer::setupRoutes() {
 
             if (stepNum === 0) {
                 document.getElementById('calStep').textContent = 'Ready to calibrate';
-                document.getElementById('calMessage').textContent = 'Click Start to begin (0 -> 6 -> 4 -> 2 kp)';
+                document.getElementById('calMessage').textContent = 'Click Start to begin (0 -> 2 -> 4 -> 6 kp)';
                 document.getElementById('calStartBtn').style.display = 'inline-block';
                 document.getElementById('calNextBtn').style.display = 'none';
                 document.getElementById('calCancelBtn').style.display = 'none';
@@ -606,11 +656,14 @@ void PowerWebServer::setupRoutes() {
                 status.className = 'status error';
                 return;
             }
+            // Empty password field means "keep the existing saved password"
+            // (the field is always blank on page load — we never display the saved one).
+            const body = password.length > 0 ? { ssid: ssid, password: password } : { ssid: ssid };
             try {
                 const res = await fetch('/api/wifi', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ ssid: ssid, password: password })
+                    body: JSON.stringify(body)
                 });
                 const result = await res.json();
                 status.textContent = result.success ? 'Saved! Restart device.' : (result.error || 'Error');
@@ -861,20 +914,31 @@ void PowerWebServer::handleSetWiFi(AsyncWebServerRequest* request, uint8_t* data
     }
 
     String ssid = doc["ssid"].as<String>();
-    String password = doc.containsKey("password") ? doc["password"].as<String>() : "";
-
     if (ssid.length() == 0 || ssid.length() > 32) {
         request->send(400, "application/json", "{\"success\":false,\"error\":\"SSID must be 1-32 characters\"}");
         return;
     }
 
-    if (password.length() > 63) {
-        request->send(400, "application/json", "{\"success\":false,\"error\":\"Password too long\"}");
-        return;
+    // If the client omits "password", keep the currently-saved password.
+    // (The form's password field is always blank on page load — sending "" would
+    // wipe a working password just because the user pressed Save without retyping.)
+    String password;
+    bool passwordProvided = doc.containsKey("password");
+    if (passwordProvided) {
+        password = doc["password"].as<String>();
+        if (password.length() > 63) {
+            request->send(400, "application/json", "{\"success\":false,\"error\":\"Password too long\"}");
+            return;
+        }
+    } else {
+        String oldSsid;
+        _settings->loadWiFi(oldSsid, password); // keep the existing password
     }
 
     _settings->saveWiFi(ssid.c_str(), password.c_str());
-    Serial.printf("WiFi credentials saved: %s\n", ssid.c_str());
+    Serial.printf("WiFi credentials saved: %s (pass %d chars, %s)\n",
+                  ssid.c_str(), password.length(),
+                  passwordProvided ? "provided" : "kept-existing");
 
     request->send(200, "application/json", "{\"success\":true,\"message\":\"Restart to connect to WiFi\"}");
 }
@@ -888,10 +952,10 @@ void PowerWebServer::handleClearWiFi(AsyncWebServerRequest* request) {
 void PowerWebServer::handleCalibrationStatus(AsyncWebServerRequest* request) {
     JsonDocument doc;
 
-    const char* stateNames[] = {"idle", "0kp", "6kp", "4kp", "2kp", "done"};
+    const char* stateNames[] = {"idle", "0kp", "2kp", "4kp", "6kp", "done"};
     doc["state"] = stateNames[_calState];
     doc["step"] = (int)_calState;
-    doc["adc"] = readAdcSmoothed();
+    doc["adc"] = _lastSample.adc_raw;
     doc["values"]["adc0"] = _calValues[0];
     doc["values"]["adc2"] = _calValues[1];
     doc["values"]["adc4"] = _calValues[2];
@@ -915,47 +979,39 @@ void PowerWebServer::handleCalibrationNext(AsyncWebServerRequest* request) {
         return;
     }
 
-    // Read current smoothed ADC value
-    float adcFloat = readAdcAvg();
-    int adcValue = (int)roundf(adcFloat);
-    Serial.printf("Captured ADC: %.2f (rounded: %d) for state %d\n", adcFloat, adcValue, (int)_calState);
+    // Capture from PowerReal's already-smoothed sample. No blocking ADC reads on
+    // the AsyncTCP request thread — that was the source of the lag.
+    int adcValue = (int)roundf(_lastSample.adc_raw);
+    Serial.printf("Captured ADC: %d for state %d\n", adcValue, (int)_calState);
 
-    // Order: 0kp -> 6kp -> 4kp -> 2kp (easier to remove weights)
+    // Order: 0kp -> 2kp -> 4kp -> 6kp (stock firmware order).
     switch (_calState) {
         case CAL_0KP:
             _calValues[0] = adcValue;
-            _calState = CAL_6KP;
-            Serial.printf("0kp ADC: %d, moving to state %d (CAL_6KP)\n", adcValue, (int)_calState);
-            request->send(200, "application/json", "{\"success\":true,\"message\":\"Set pendulum to 6 kp and click Next\"}");
-            break;
-        case CAL_6KP:
-            _calValues[3] = adcValue;
-            _calState = CAL_4KP;
-            Serial.printf("6kp ADC: %d, moving to state %d (CAL_4KP)\n", adcValue, (int)_calState);
-            request->send(200, "application/json", "{\"success\":true,\"message\":\"Set pendulum to 4 kp and click Next\"}");
-            break;
-        case CAL_4KP:
-            _calValues[2] = adcValue;
             _calState = CAL_2KP;
-            Serial.printf("4kp ADC: %d, moving to state %d (CAL_2KP)\n", adcValue, (int)_calState);
             request->send(200, "application/json", "{\"success\":true,\"message\":\"Set pendulum to 2 kp and click Next\"}");
             break;
         case CAL_2KP:
             _calValues[1] = adcValue;
-            Serial.printf("2kp ADC: %d\n", adcValue);
-
-            // Save calibration
+            _calState = CAL_4KP;
+            request->send(200, "application/json", "{\"success\":true,\"message\":\"Set pendulum to 4 kp and click Next\"}");
+            break;
+        case CAL_4KP:
+            _calValues[2] = adcValue;
+            _calState = CAL_6KP;
+            request->send(200, "application/json", "{\"success\":true,\"message\":\"Set pendulum to 6 kp and click Next\"}");
+            break;
+        case CAL_6KP:
+            _calValues[3] = adcValue;
             _settings->saveCalibration(_calValues[0], _calValues[1], _calValues[2], _calValues[3]);
             _calibration->updateValues(_calValues[0], _calValues[1], _calValues[2], _calValues[3]);
-
-            Serial.printf("Calibration saved: 0kp=%d 2kp=%d 4kp=%d 6kp=%d\n", _calValues[0], _calValues[1], _calValues[2], _calValues[3]);
+            Serial.printf("Calibration saved: 0kp=%d 2kp=%d 4kp=%d 6kp=%d\n",
+                          _calValues[0], _calValues[1], _calValues[2], _calValues[3]);
             _calState = CAL_DONE;
-            Serial.printf("Moving to state %d (CAL_DONE)\n", (int)_calState);
             request->send(200, "application/json", "{\"success\":true,\"message\":\"Calibration complete and saved!\"}");
             break;
         case CAL_DONE:
             _calState = CAL_IDLE;
-            Serial.printf("Moving to state %d (CAL_IDLE)\n", (int)_calState);
             request->send(200, "application/json", "{\"success\":true,\"message\":\"Calibration finished\"}");
             break;
         default:

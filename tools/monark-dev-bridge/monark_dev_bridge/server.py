@@ -38,6 +38,10 @@ class Bridge:
         self._broadcast_task: asyncio.Task | None = None
         self._scan_lock = asyncio.Lock()
         self._scan_results: list[dict] = []
+        # Lightweight chat log so the assistant can post status notes the user
+        # can read on the dashboard while pedaling. In-memory ring buffer.
+        self._notes: list[dict] = []
+        self._notes_max = 100
 
     # ---- lifecycle ----
 
@@ -131,6 +135,20 @@ class Bridge:
         client.start()
         self.clients[role] = client
 
+    # ---- notes (assistant → user chat) ----
+
+    def append_note(self, text: str, kind: str = "info") -> dict:
+        note = {"ts": time.time(), "text": text, "kind": kind}
+        self._notes.append(note)
+        if len(self._notes) > self._notes_max:
+            self._notes = self._notes[-self._notes_max:]
+        return note
+
+    def list_notes(self, since_ts: float = 0.0) -> list[dict]:
+        if since_ts <= 0:
+            return list(self._notes)
+        return [n for n in self._notes if n["ts"] > since_ts]
+
     def _sync_clients(self) -> None:
         for role in ROLES:
             d = self.cfg.device(role)
@@ -187,6 +205,23 @@ def build_app(cfg_path: Path) -> FastAPI:
     @app.websocket("/api/stream")
     async def stream(ws: WebSocket) -> None:
         await bridge.attach_ws(ws)
+
+    # ---- notes / chat (assistant posts, dashboard polls) ------------------
+
+    @app.get("/api/notes")
+    async def notes_get(since: float = 0.0) -> JSONResponse:
+        return JSONResponse({"notes": bridge.list_notes(since_ts=since)})
+
+    @app.post("/api/notes")
+    async def notes_post(payload: dict) -> JSONResponse:
+        text = (payload.get("text") or "").strip()
+        if not text:
+            raise HTTPException(400, "text required")
+        kind = payload.get("kind", "info")
+        if kind not in ("info", "warn", "ok", "wait"):
+            kind = "info"
+        note = bridge.append_note(text, kind=kind)
+        return JSONResponse({"ok": True, "note": note})
 
     # ---- session export (Garmin Connect TCX) -------------------------------
 

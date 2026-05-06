@@ -76,6 +76,14 @@ def _compute_cadence(
 
     d_revs = (crank_revs - state.last_crank_revs) % CRANK_REV_ROLLOVER
     d_time = (crank_time - state.last_crank_time) % CRANK_TIME_ROLLOVER
+
+    # Counter reset detection: a real CPS rev counter rolls forward by 1 per
+    # crank, so deltas wider than half the modular space are almost certainly
+    # the peripheral rebooting (e.g. ESP32 reflashed mid-session) — *not* a
+    # 32000-rev sprint. Drop the sample, re-baseline, hold last cadence.
+    if d_revs > CRANK_REV_ROLLOVER // 2:
+        return state.last_cadence_rpm
+
     if d_time == 0:
         # No crank event since last sample — pedaling stopped or notification rate > sensor rate.
         # Hold last cadence for one tick; aggregator's stale logic decays it eventually.

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>TCX overlay — real vs ESP32</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css" />
+<style>
+  body { margin: 0; font: 14px/1.4 -apple-system, system-ui, sans-serif; background: #0e1116; color: #e6edf3; }
+  header { padding: 14px 18px; border-bottom: 1px solid #2a313a; }
+  h1 { font-size: 16px; margin: 0 0 6px 0; }
+  .sub { color: #7d8590; font-size: 12px; }
+  main { padding: 18px; max-width: 1400px; margin: 0 auto; }
+  .pickers { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 18px; }
+  .picker {
+    background: #161b22; border: 1px solid #2a313a; border-radius: 8px;
+    padding: 16px; transition: border-color 120ms ease;
+  }
+  .picker.real { border-left: 3px solid #58a6ff; }
+  .picker.esp  { border-left: 3px solid #f0883e; }
+  .picker.dragover { border-color: #56d364; }
+  .picker label { display: block; font-size: 11px; text-transform: uppercase;
+                  letter-spacing: 0.08em; color: #7d8590; margin-bottom: 6px; }
+  .picker .filename { font-family: ui-monospace, monospace; color: #e6edf3; }
+  .picker .meta { color: #7d8590; font-size: 12px; margin-top: 4px; }
+  .picker input[type=file] { display: none; }
+  .picker .drop {
+    color: #7d8590; font-size: 13px; cursor: pointer;
+    padding: 14px; text-align: center; border: 1px dashed #30363d; border-radius: 6px;
+  }
+  .picker .drop:hover { border-color: #58a6ff; color: #e6edf3; }
+  .stats { background: #161b22; border: 1px solid #2a313a; border-radius: 8px;
+           padding: 12px 16px; margin-bottom: 14px; font-size: 13px; }
+  .stats table { width: 100%; border-collapse: collapse; }
+  .stats th, .stats td { text-align: right; padding: 4px 10px; font-variant-numeric: tabular-nums; }
+  .stats th:first-child, .stats td:first-child { text-align: left; color: #7d8590; }
+  .chartwrap {
+    background: #161b22; border: 1px solid #2a313a; border-radius: 8px;
+    padding: 8px; margin-bottom: 14px;
+  }
+  .chartwrap h2 { margin: 4px 8px 8px; font-size: 13px; color: #7d8590;
+                  text-transform: uppercase; letter-spacing: 0.08em; }
+  .empty { color: #6e7681; font-size: 13px; padding: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TCX overlay — real pedals vs ESP32</h1>
+  <div class="sub">Drop one .tcx file into each box (or click to pick). Charts render in your browser, no upload anywhere. Take a screenshot when both files are loaded.</div>
+</header>
+
+<main>
+  <section class="pickers">
+    <div class="picker real" id="picker-real">
+      <label>Real pedals (reference)</label>
+      <div class="drop" id="drop-real">Drop or click — *.tcx</div>
+      <div class="filename" id="name-real"></div>
+      <div class="meta" id="meta-real"></div>
+      <input type="file" id="file-real" accept=".tcx,application/xml,text/xml">
+    </div>
+    <div class="picker esp" id="picker-esp">
+      <label>ESP32 (under test)</label>
+      <div class="drop" id="drop-esp">Drop or click — *.tcx</div>
+      <div class="filename" id="name-esp"></div>
+      <div class="meta" id="meta-esp"></div>
+      <input type="file" id="file-esp" accept=".tcx,application/xml,text/xml">
+    </div>
+  </section>
+
+  <section class="stats" id="stats" hidden>
+    <table>
+      <thead><tr><th>Metric</th><th>real</th><th>ESP32</th><th>Δ (esp − real)</th><th>Δ%</th></tr></thead>
+      <tbody id="stats-body"></tbody>
+    </table>
+  </section>
+
+  <section class="chartwrap">
+    <h2>Power (W)</h2>
+    <div id="chart-power" class="empty">Load both files to render.</div>
+  </section>
+  <section class="chartwrap">
+    <h2>Cadence (rpm)</h2>
+    <div id="chart-cadence" class="empty">Load both files to render.</div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+<script>
+const TCX_NS = 'http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2';
+const EXT_NS = 'http://www.garmin.com/xmlschemas/ActivityExtension/v2';
+
+let series = { real: null, esp: null };
+let charts = { power: null, cadence: null };
+
+function parseTcx(text) {
+  const doc = new DOMParser().parseFromString(text, 'application/xml');
+  const err = doc.querySelector('parsererror');
+  if (err) throw new Error('XML parse error: ' + err.textContent.slice(0, 200));
+  const tps = doc.getElementsByTagNameNS(TCX_NS, 'Trackpoint');
+  const t = [], w = [], c = [], h = [];
+  for (let i = 0; i < tps.length; i++) {
+    const tp = tps[i];
+    const timeEl = tp.getElementsByTagNameNS(TCX_NS, 'Time')[0];
+    if (!timeEl) continue;
+    const ts = Date.parse(timeEl.textContent) / 1000; // seconds (uPlot wants seconds)
+    if (!Number.isFinite(ts)) continue;
+    t.push(ts);
+
+    const wEl = tp.getElementsByTagNameNS(EXT_NS, 'Watts')[0];
+    w.push(wEl ? parseFloat(wEl.textContent) : null);
+
+    const cEl = tp.getElementsByTagNameNS(TCX_NS, 'Cadence')[0];
+    c.push(cEl ? parseFloat(cEl.textContent) : null);
+
+    const hVal = tp.getElementsByTagNameNS(TCX_NS, 'Value')[0];
+    h.push(hVal ? parseFloat(hVal.textContent) : null);
+  }
+  return { t, w, c, h };
+}
+
+function updateMeta(elId, parsed) {
+  const el = document.getElementById(elId);
+  if (!parsed) { el.textContent = ''; return; }
+  const n = parsed.t.length;
+  if (n === 0) { el.textContent = '(empty)'; return; }
+  const dur = parsed.t[n-1] - parsed.t[0];
+  const fmt = ts => new Date(ts * 1000).toLocaleTimeString();
+  el.textContent = `${n} points · ${fmt(parsed.t[0])} → ${fmt(parsed.t[n-1])} · ${dur.toFixed(0)}s`;
+}
+
+// Resample series B onto series A's timeline using nearest-neighbour (within ±2s).
+// Returns { tA, yA, yB } same length, with yB possibly nulls where no nearby B sample.
+function alignNearest(tA, yA, tB, yB, toleranceS = 2.0) {
+  const out = new Array(tA.length).fill(null);
+  let j = 0;
+  for (let i = 0; i < tA.length; i++) {
+    while (j + 1 < tB.length && Math.abs(tB[j + 1] - tA[i]) <= Math.abs(tB[j] - tA[i])) j++;
+    if (j < tB.length && Math.abs(tB[j] - tA[i]) <= toleranceS) out[i] = yB[j];
+  }
+  return out;
+}
+
+function nullSafeMean(arr) {
+  let s = 0, n = 0;
+  for (const v of arr) if (v != null && Number.isFinite(v)) { s += v; n++; }
+  return n ? s / n : null;
+}
+
+function nullSafeStd(arr, mean) {
+  if (mean == null) return null;
+  let s = 0, n = 0;
+  for (const v of arr) if (v != null && Number.isFinite(v)) { s += (v - mean) ** 2; n++; }
+  return n ? Math.sqrt(s / n) : null;
+}
+
+function renderStats() {
+  if (!series.real || !series.esp) return;
+  const tbody = document.getElementById('stats-body');
+  tbody.innerHTML = '';
+  const rW = series.real.w, eW = series.esp.w;
+  const rC = series.real.c, eC = series.esp.c;
+  const rWmean = nullSafeMean(rW), eWmean = nullSafeMean(eW);
+  const rCmean = nullSafeMean(rC), eCmean = nullSafeMean(eC);
+
+  const rows = [
+    ['Power mean (W)', rWmean, eWmean],
+    ['Power std (W)',  nullSafeStd(rW, rWmean), nullSafeStd(eW, eWmean)],
+    ['Cadence mean (rpm)', rCmean, eCmean],
+    ['Cadence std (rpm)',  nullSafeStd(rC, rCmean), nullSafeStd(eC, eCmean)],
+    ['Trackpoints', rW.length, eW.length],
+  ];
+  for (const [name, a, b] of rows) {
+    const tr = document.createElement('tr');
+    const fmt = v => v == null ? '–' : (typeof v === 'number' ? v.toFixed(1) : v);
+    let dCell = '–', dpCell = '–';
+    if (a != null && b != null && typeof a === 'number' && typeof b === 'number' && !name.startsWith('Trackpoints')) {
+      const d = b - a;
+      dCell = (d >= 0 ? '+' : '') + d.toFixed(1);
+      if (a !== 0) dpCell = (d/a >= 0 ? '+' : '') + (100 * d / a).toFixed(1) + '%';
+    }
+    tr.innerHTML = `<td>${name}</td><td>${fmt(a)}</td><td>${fmt(b)}</td><td>${dCell}</td><td>${dpCell}</td>`;
+    tbody.appendChild(tr);
+  }
+  document.getElementById('stats').hidden = false;
+}
+
+function renderCharts() {
+  if (!series.real || !series.esp) return;
+  const r = series.real, e = series.esp;
+
+  // Power chart — share the real timeline; resample esp onto it
+  const ePowerOnReal = alignNearest(r.t, r.w, e.t, e.w);
+  const eCadOnReal   = alignNearest(r.t, r.c, e.t, e.c);
+
+  const powerEl = document.getElementById('chart-power');
+  powerEl.classList.remove('empty');
+  powerEl.innerHTML = '';
+  if (charts.power) charts.power.destroy();
+  charts.power = new uPlot({
+    width: powerEl.clientWidth || 1200, height: 320,
+    scales: { x: { time: true }, y: { auto: true } },
+    series: [
+      {},
+      { label: 'real (Assioma)', stroke: '#58a6ff', width: 1.6 },
+      { label: 'ESP32',          stroke: '#f0883e', width: 1.6 },
+    ],
+    axes: [{ stroke: '#7d8590' }, { stroke: '#7d8590' }],
+  }, [r.t, r.w, ePowerOnReal], powerEl);
+
+  const cadEl = document.getElementById('chart-cadence');
+  cadEl.classList.remove('empty');
+  cadEl.innerHTML = '';
+  if (charts.cadence) charts.cadence.destroy();
+  charts.cadence = new uPlot({
+    width: cadEl.clientWidth || 1200, height: 320,
+    scales: { x: { time: true }, y: { auto: true } },
+    series: [
+      {},
+      { label: 'real (Assioma)', stroke: '#56d364', width: 1.6 },
+      { label: 'ESP32',          stroke: '#d4a72c', width: 1.6 },
+    ],
+    axes: [{ stroke: '#7d8590' }, { stroke: '#7d8590' }],
+  }, [r.t, r.c, eCadOnReal], cadEl);
+
+  renderStats();
+}
+
+function bindPicker(role) {
+  const picker = document.getElementById(`picker-${role}`);
+  const drop   = document.getElementById(`drop-${role}`);
+  const input  = document.getElementById(`file-${role}`);
+  const name   = document.getElementById(`name-${role}`);
+
+  drop.addEventListener('click', () => input.click());
+  input.addEventListener('change', e => loadFile(role, e.target.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => picker.addEventListener(ev, e => {
+    e.preventDefault(); picker.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach(ev => picker.addEventListener(ev, e => {
+    e.preventDefault(); picker.classList.remove('dragover');
+  }));
+  picker.addEventListener('drop', e => {
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) loadFile(role, e.dataTransfer.files[0]);
+  });
+
+  function loadFile(role, file) {
+    if (!file) return;
+    name.textContent = file.name;
+    file.text().then(text => {
+      try {
+        series[role] = parseTcx(text);
+        updateMeta(`meta-${role}`, series[role]);
+        renderCharts();
+      } catch (err) {
+        document.getElementById(`meta-${role}`).textContent = 'parse error: ' + err.message;
+      }
+    });
+  }
+}
+
+bindPicker('real');
+bindPicker('esp');
+
+// Auto-resize charts on viewport change.
+window.addEventListener('resize', () => {
+  if (charts.power)   charts.power.setSize({   width: document.getElementById('chart-power').clientWidth,   height: 320 });
+  if (charts.cadence) charts.cadence.setSize({ width: document.getElementById('chart-cadence').clientWidth, height: 320 });
+});
+</script>
+</body>
+</html>

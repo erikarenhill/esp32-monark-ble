@@ -32,19 +32,10 @@ private:
     PowerSample _lastSample;
     uint32_t _lastSampleTime = 0;
 
-    // Web calibration state (order: 0kp -> 6kp -> 4kp -> 2kp)
-    enum CalibState { CAL_IDLE, CAL_0KP, CAL_6KP, CAL_4KP, CAL_2KP, CAL_DONE };
+    // Web calibration state (order: 0kp -> 2kp -> 4kp -> 6kp, stock firmware order)
+    enum CalibState { CAL_IDLE, CAL_0KP, CAL_2KP, CAL_4KP, CAL_6KP, CAL_DONE };
     CalibState _calState = CAL_IDLE;
     int _calValues[4] = {0, 0, 0, 0};  // 0kp, 2kp, 4kp, 6kp
-
-    float readAdcQuick();  // Quick read (8 samples)
-    float readAdcSmoothed();  // Smoothed read for calibration display (~1s)
-    float readAdcAvg();    // 5-second smoothed read for calibration capture
-
-    // ADC smoothing buffer for calibration display (~1 second at 200ms polling)
-    float _calAdcBuffer[20] = {0};
-    uint8_t _calAdcHead = 0;
-    uint8_t _calAdcCount = 0;
 
     bool tryConnectWiFi();
     void startAPMode();

@@ -16,6 +16,7 @@ public:
   void begin() override;
   void showPower(const PowerSample& s, const WorkoutDisplay* workout = nullptr) override;
   void showMessage(const char* line1, const char* line2) override;
+  void setStatus(const char* text) override;
 
 private:
   Arduino_DataBus* _bus = nullptr;
@@ -27,6 +28,10 @@ private:
   float _lastRpm = -1.0f;
   uint32_t _lastFullRedrawMs = 0;
 
+  // Small status text painted above the POWER label (e.g. WiFi IP).
+  char _status[32] = {0};
+
   void drawStaticChrome();
+  void drawStatusBar();
   void drawNumber(int x, int y, int w, int h, uint8_t textSize, const char* text);
 };

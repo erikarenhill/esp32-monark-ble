@@ -28,6 +28,10 @@
 #include "BoardConfig.h"
 
 // -------- CONFIG --------
+// Stock baseline. We're tuning live this session — see migration in setup()
+// that force-overwrites NVS each boot so we know exactly which value the
+// firmware is using. Remove the unconditional save once the right value is
+// locked in.
 static const float CYCLE_CONSTANT = 1.05f;
 static const bool DEVELOPER_MODE = true; // If true, skip auto-calibration on missing settings
 
@@ -67,6 +71,10 @@ void setup() {
   Serial.println("Init settings...");
   Serial.flush();
   settings.begin();
+#ifdef CLEAR_WIFI_ON_BOOT
+  Serial.println("CLEAR_WIFI_ON_BOOT defined — wiping saved WiFi credentials");
+  settings.clearWiFi();
+#endif
   Serial.println("Settings OK");
   Serial.flush();
 
@@ -102,9 +110,17 @@ void setup() {
 
   calibration = new MonarkCalibration(a0, a2, a4, a6);
 
-  // Load cycle constant from settings
+  // Live-tuning session: force NVS to match the source default each boot so
+  // we know exactly what cycle_constant is in effect. Remove this overwrite
+  // once we've locked in the tuned value.
   float cycleConstant = settings.loadCycleConstant(CYCLE_CONSTANT);
-  Serial.printf("Cycle constant: %.2f\n", cycleConstant);
+  if (fabsf(cycleConstant - CYCLE_CONSTANT) > 1e-4f) {
+    Serial.printf("Forcing cycle_constant %.3f → %.3f (matches source default)\n",
+                  cycleConstant, CYCLE_CONSTANT);
+    cycleConstant = CYCLE_CONSTANT;
+    settings.saveCycleConstant(cycleConstant);
+  }
+  Serial.printf("Cycle constant: %.3f\n", cycleConstant);
 
   // Load simulator mode from settings (defaults to false)
   bool useSimulator = settings.loadSimulatorMode(false);
@@ -146,6 +162,17 @@ void setup() {
   webServer->begin();  // Uses device name from settings
   Serial.println("WiFi OK");
   Serial.flush();
+
+  // Surface where the web UI lives, both on serial and on the LCD's status bar
+  // so you don't have to dig through serial every boot.
+  if (display) {
+    char status[32];
+    snprintf(status, sizeof(status), "%s %s",
+             webServer->isAPMode() ? "AP" : "WIFI",
+             webServer->getIPAddress().c_str());
+    display->setStatus(status);
+    Serial.printf("UI at http://%s/\n", webServer->getIPAddress().c_str());
+  }
 
   Serial.println("System started (LCD + BLE + WiFi).");
 }

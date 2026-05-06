@@ -12,8 +12,20 @@ static const float ADC_VREF_MV = 3300.0f;  // ESP32 reference voltage
 static const float ADC_MAX_RAW = 4095.0f;  // 12-bit ADC
 
 // Cadence tuning
-static const uint32_t EDGE_DEBOUNCE_MS   = 12;
-static const uint32_t MIN_REV_PERIOD_MS  = 200;
+//
+// EDGE_DEBOUNCE_MS — minimum gap between two same-direction edges. Reed-switch
+// contact bounce is typically 0.5–2 ms; 4 ms is comfortably above that without
+// rejecting a legitimate fast contact at the bottom of a hard sprint.
+//
+// MIN_REV_PERIOD_MS — minimum gap between rev counts. At 100 ms this caps the
+// counter at 600 rpm — unreachable in practice — while still rejecting any
+// bounce-pair where one closure was visibly wider than EDGE_DEBOUNCE_MS.
+//
+// Lowering both values gives us a *second chance* to catch a real edge that
+// was masked by a previous bounce. The missed-rev back-fill in the ISR is the
+// safety net; this tune is about feeding it fewer holes to fill.
+static const uint32_t EDGE_DEBOUNCE_MS   = 4;
+static const uint32_t MIN_REV_PERIOD_MS  = 100;
 static const uint32_t WINDOW_SHORT_MS    = 3000;   // 3s window (responsive)
 static const uint32_t WINDOW_LONG_MS     = 10000;  // 10s window (smooth)
 static const uint32_t TIMEOUT_MS         = 5000;
@@ -40,7 +52,31 @@ static inline void push_timestamp(uint32_t t_ms) {
   if (ts_count < TS_BUF_SIZE) ts_count++;
 }
 
-// ISR - debounce rising and falling edges independently to prevent missed readings
+// Average period across the last N revs in the ring, in milliseconds. Returns 0
+// if we don't have enough history yet. Cheap integer-only — safe in ISR.
+static inline uint32_t avg_recent_period_ms(uint8_t lookback) {
+  if (ts_count < lookback + 1) return 0;
+  uint32_t sum = 0;
+  uint8_t n = 0;
+  for (uint8_t k = 0; k < lookback; k++) {
+    uint8_t i = (ts_head + TS_BUF_SIZE - 1 - k) % TS_BUF_SIZE;
+    uint8_t j = (ts_head + TS_BUF_SIZE - 2 - k) % TS_BUF_SIZE;
+    uint32_t a = ts_buf[i];
+    uint32_t b = ts_buf[j];
+    if (a > b) {
+      sum += (a - b);
+      n++;
+    }
+  }
+  return n ? (sum / n) : 0;
+}
+
+// ISR - debounce rising and falling edges independently. Detects a missed rev
+// (a single dropped reed contact at high cadence) by comparing the current
+// period against the rolling average of the last 4 — if it's notably longer
+// than the average AND we have enough history, we synthesize a virtual rev at
+// the midpoint of the gap so cadence stays smooth instead of momentarily
+// halving.
 void IRAM_ATTR cadenceISR() {
   isr_calls++;  // Debug: count every ISR call
   uint32_t now = millis();
@@ -55,6 +91,25 @@ void IRAM_ATTR cadenceISR() {
     armed_for_count = false;
 
     if (last_rev_ms != 0 && (now - last_rev_ms) < MIN_REV_PERIOD_MS) return;
+
+    // Missed-rev recovery: if this gap is ~2× the recent rolling average,
+    // assume the reed missed one closure and back-fill a virtual rev at the
+    // midpoint. Bounded above (≤ 4× avg) so a real long pause / stop doesn't
+    // get back-filled with phantom revs.
+    if (last_rev_ms != 0 && ts_count >= 5) {
+      uint32_t avg_p = avg_recent_period_ms(4);
+      if (avg_p > 0) {
+        uint32_t this_p = now - last_rev_ms;
+        // 1.5× threshold: more aggressive — catches near-miss drops where a
+        // single contact was lost. 4× upper bound still rejects real pauses
+        // (e.g. user slowing down or stopping).
+        if (this_p > (avg_p * 15) / 10 && this_p < avg_p * 4) {
+          uint32_t virt_t = last_rev_ms + (this_p / 2);
+          push_timestamp(virt_t);
+          total_revs++;
+        }
+      }
+    }
 
     last_rev_ms = now;
     total_revs++;
