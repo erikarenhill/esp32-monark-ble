@@ -2,5 +2,6 @@
 .pio/
 .vscode/
 .ijfw/
+.claude/
 CLAUDE.md
 tools/monark-dev-bridge/session-*.tcx
