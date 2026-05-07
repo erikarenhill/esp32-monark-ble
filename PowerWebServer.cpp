@@ -244,6 +244,45 @@ void PowerWebServer::setupRoutes() {
         handleClearWiFi(request);
     });
 
+    // GET /api/wifi/scan - poll scan state. Auto-kicks an async scan if none
+    // is in flight; returns "started" / "running" / "done" with results.
+    // Works from both STA and AP modes (we briefly enable STA scan capability
+    // without dropping the AP).
+    _server.on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        int n = WiFi.scanComplete();
+        JsonDocument doc;
+        if (n == WIFI_SCAN_FAILED || n == -2) {
+            // Make sure STA mode is at least available alongside the AP.
+            if (_isAPMode) WiFi.mode(WIFI_AP_STA);
+            WiFi.scanNetworks(true /*async*/);
+            doc["status"] = "started";
+        } else if (n == WIFI_SCAN_RUNNING || n == -1) {
+            doc["status"] = "running";
+        } else {
+            doc["status"] = "done";
+            doc["count"] = n;
+            JsonArray arr = doc["results"].to<JsonArray>();
+            for (int i = 0; i < n && i < 24; i++) {
+                JsonObject o = arr.add<JsonObject>();
+                o["ssid"] = WiFi.SSID(i);
+                o["rssi"] = WiFi.RSSI(i);
+                o["channel"] = WiFi.channel(i);
+                o["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+            }
+        }
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
+    });
+
+    // POST /api/wifi/scan - force a fresh scan (deletes previous results).
+    _server.on("/api/wifi/scan", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        WiFi.scanDelete();
+        if (_isAPMode) WiFi.mode(WIFI_AP_STA);
+        WiFi.scanNetworks(true);
+        request->send(200, "application/json", "{\"status\":\"started\"}");
+    });
+
     // Reboot endpoint
     _server.on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
         request->send(200, "application/json", "{\"success\":true,\"message\":\"Rebooting...\"}");
@@ -331,428 +370,508 @@ void PowerWebServer::setupRoutes() {
     _server.on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
         String html = R"rawhtml(
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>Monark Power</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a2e; color: #eee; }
-        .card { background: #16213e; padding: 20px; border-radius: 10px; margin: 10px 0; }
-        .value { font-size: 48px; font-weight: bold; color: #4ecca3; }
-        .label { font-size: 14px; color: #888; }
-        .row { display: flex; gap: 20px; flex-wrap: wrap; }
-        .col { flex: 1; min-width: 120px; }
-        input { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; background: #0f3460; border: 1px solid #4ecca3; color: #eee; border-radius: 5px; }
-        button { padding: 15px 30px; background: #4ecca3; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 10px; }
-        button:hover { background: #3db892; }
-        h2 { color: #4ecca3; margin-top: 0; }
-        .status { margin-left: 10px; }
-        .success { color: #4ecca3; }
-        .error { color: #e94560; }
-    </style>
+<meta charset="utf-8">
+<title>monark · cycle computer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#0e0c0a; --surface:#171411; --surface2:#1f1b16;
+  --ink:#f3ece0; --dim:#8a7f6e; --rule:#2a251e;
+  --accent:#ff8a14; --accent2:#ffb84d; --ok:#a3c46a; --warn:#e85a3c;
+  --fd:"Inter Tight",ui-sans-serif,system-ui,sans-serif;
+  --fm:"JetBrains Mono",ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--fd);-webkit-font-smoothing:antialiased}
+body{min-height:100vh;padding-bottom:96px;padding-top:env(safe-area-inset-top)}
+@media (min-width:600px){body{max-width:480px;margin:0 auto;border-left:1px solid var(--rule);border-right:1px solid var(--rule)}}
+.toptitle{padding:14px 18px 0;display:flex;justify-content:space-between;align-items:flex-start}
+.toptitle h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.02em;text-transform:lowercase}
+.toptitle .sub{font-family:var(--fm);font-size:9px;letter-spacing:.22em;color:var(--dim);text-transform:uppercase}
+.pill{display:inline-flex;gap:6px;align-items:center}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent)}
+.pill .text{font-family:var(--fm);font-size:10px;letter-spacing:.18em;color:var(--accent);text-transform:uppercase}
+.card{margin:14px;padding:14px 16px 12px;background:var(--surface);border:1px solid var(--rule);position:relative}
+.card .head{display:flex;justify-content:space-between;font-family:var(--fm);font-size:9px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase}
+.card .head .accent{color:var(--accent)}
+.big-num{font-size:72px;font-weight:700;letter-spacing:-.045em;line-height:.9;font-variant-numeric:tabular-nums;margin-top:4px;display:flex;align-items:baseline;gap:6px}
+.big-num small{font-family:var(--fm);font-size:14px;color:var(--dim);font-weight:400}
+.spark{margin:14px -16px 4px;display:block}
+.foot-line{display:flex;justify-content:space-between;font-family:var(--fm);font-size:9px;color:var(--dim);margin-top:4px}
+.foot-line span b{color:var(--ink);font-weight:500}
+.grid-3{margin:0 14px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.tile{padding:10px;background:var(--surface);border:1px solid var(--rule)}
+.tile .label{font-family:var(--fm);font-size:8px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase}
+.tile .val{font-size:24px;font-weight:600;letter-spacing:-.03em;margin-top:4px;font-variant-numeric:tabular-nums}
+.tile .val small{font-family:var(--fm);font-size:9px;color:var(--dim);margin-left:3px;font-weight:400}
+.zones{margin:14px}
+.zones .head{display:flex;justify-content:space-between;font-family:var(--fm);font-size:9px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase;margin-bottom:6px}
+.zones .bars{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;align-items:end;height:50px}
+.zones .col{display:flex;flex-direction:column;align-items:center;gap:3px;height:100%}
+.zones .b{width:100%;min-height:2px}
+.zones span{font-family:var(--fm);font-size:8px;color:var(--dim)}
+.ip-strip{position:fixed;bottom:60px;left:0;right:0;padding:8px 14px;display:flex;justify-content:space-between;font-family:var(--fm);font-size:10px;color:var(--dim);background:var(--bg);border-top:1px solid var(--rule)}
+.ip-strip .ip{color:var(--accent)}
+@media (min-width:600px){.ip-strip{max-width:480px;left:50%;transform:translateX(-50%)}}
+nav.tabs{position:fixed;bottom:0;left:0;right:0;height:60px;background:var(--surface);border-top:1px solid var(--rule);display:grid;grid-template-columns:repeat(4,1fr);padding-bottom:env(safe-area-inset-bottom)}
+@media (min-width:600px){nav.tabs{max-width:480px;left:50%;transform:translateX(-50%)}}
+nav.tabs button{background:none;border:0;color:var(--dim);font-family:var(--fm);font-size:10px;letter-spacing:.18em;text-transform:uppercase;cursor:pointer;padding:0}
+nav.tabs button.active{color:var(--accent)}
+input[type=text],input[type=password],input[type=number]{width:calc(100% - 28px);box-sizing:border-box;padding:12px 14px;background:var(--surface);border:1px solid var(--rule);color:var(--ink);font-family:var(--fd);font-size:15px;outline:none;margin:0 14px 10px}
+input:focus{border-color:var(--accent)}
+label{display:block;font-family:var(--fm);font-size:9px;letter-spacing:.2em;color:var(--dim);margin:14px 14px 6px;text-transform:uppercase}
+button.btn{padding:13px;background:transparent;border:1px solid var(--rule);color:var(--ink);font-family:var(--fm);font-size:11px;letter-spacing:.18em;text-transform:uppercase;cursor:pointer;flex:1}
+button.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg);font-weight:600}
+button.btn.danger{color:var(--warn);border-color:var(--warn)}
+button.btn:disabled{opacity:.5;cursor:wait}
+.btn-row{margin:14px;display:flex;gap:8px}
+.wifi-list{margin:0 14px;background:var(--surface);border:1px solid var(--rule)}
+.wifi-row{padding:12px 14px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center;cursor:pointer}
+.wifi-row:last-child{border-bottom:0}
+.wifi-row.active{background:rgba(255,138,20,.08)}
+.wifi-row .ssid{font-size:14px;font-weight:500}
+.wifi-row .meta{font-family:var(--fm);font-size:9px;color:var(--dim);margin-top:2px;letter-spacing:.1em;text-transform:uppercase}
+.wifi-row .right{display:flex;gap:8px;align-items:center}
+.bars{display:flex;gap:1px;align-items:end}
+.bars i{width:2px;background:var(--rule)}
+.bars i.on{background:var(--ink)}
+.bars i:nth-child(1){height:3px}.bars i:nth-child(2){height:6px}.bars i:nth-child(3){height:9px}.bars i:nth-child(4){height:12px}
+.badge{font-family:var(--fm);font-size:8px;letter-spacing:.18em;color:var(--accent);text-transform:uppercase}
+.steps{display:flex;gap:6px;margin:0 14px 14px}
+.steps .seg{flex:1;height:3px;background:var(--rule)}
+.steps .seg.on{background:var(--accent)}
+.cal-text{margin:0 18px 14px;font-size:16px;font-weight:500;line-height:1.3;color:var(--ink)}
+.cal-text small{display:block;font-family:var(--fm);font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5;letter-spacing:.06em}
+.row{padding:14px;margin:0 14px;border-bottom:1px solid var(--rule);display:flex;justify-content:space-between;align-items:center}
+.row .lbl{font-family:var(--fm);font-size:9px;letter-spacing:.2em;color:var(--dim);text-transform:uppercase}
+.row .val{font-size:16px;font-weight:500;margin-top:2px}
+.row .arr{color:var(--dim);font-family:var(--fm)}
+.toggle{width:36px;height:20px;position:relative;cursor:pointer;display:inline-block}
+.toggle .knob{position:absolute;top:2px;bottom:2px;width:14px;transition:left 100ms ease}
+.toggle.on{background:var(--accent)} .toggle.off{background:var(--surface2)}
+.toggle.on .knob{left:calc(100% - 16px);background:var(--bg)}
+.toggle.off .knob{left:2px;background:var(--dim)}
+.hidden{display:none !important}
+.toast{position:fixed;bottom:124px;left:14px;right:14px;padding:10px 14px;background:var(--surface);border:1px solid var(--accent);font-family:var(--fm);font-size:11px;letter-spacing:.08em;color:var(--accent);z-index:100;text-transform:uppercase}
+.toast.error{border-color:var(--warn);color:var(--warn)}
+@media (min-width:600px){.toast{max-width:452px;left:50%;transform:translateX(-50%)}}
+.fwfoot{margin:14px;padding:10px 14px;background:var(--surface);border:1px solid var(--rule);font-family:var(--fm);font-size:10px;color:var(--dim);letter-spacing:.1em;text-align:center;text-transform:uppercase}
+.adc-bar{height:4px;background:var(--rule);margin-top:8px;position:relative}
+.adc-bar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--accent);transition:width 200ms ease}
+.kp-presets{display:flex;gap:6px;margin-top:14px}
+.kp-presets div{flex:1;padding:8px 0;text-align:center;font-family:var(--fm);font-size:11px;letter-spacing:.1em;color:var(--ink);border:1px solid var(--rule);cursor:pointer;text-transform:uppercase}
+.kp-presets div.on{background:var(--accent);border-color:var(--accent);color:var(--bg);font-weight:600}
+.scan-status{font-family:var(--fm);font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.18em;padding:0 18px 8px}
+</style>
 </head>
 <body>
-    <h1 id="title">Monark Power Meter</h1>
 
-    <div class="card">
-        <div class="row">
-            <div class="col">
-                <div class="label">Power</div>
-                <div class="value" id="power">--</div>
-                <div class="label">watts</div>
-            </div>
-            <div class="col">
-                <div class="label">Cadence</div>
-                <div class="value" id="rpm">--</div>
-                <div class="label">rpm</div>
-            </div>
-            <div class="col">
-                <div class="label">Resistance</div>
-                <div class="value" id="kp">--</div>
-                <div class="label">kp</div>
-            </div>
-            <div class="col">
-                <div class="label">ADC Raw</div>
-                <div class="value" id="adc" style="font-size:32px;">--</div>
-                <div class="label">&nbsp;</div>
-            </div>
-        </div>
+<!-- ─── DASHBOARD ─── -->
+<section id="screen-dash">
+  <div class="toptitle">
+    <div>
+      <div class="sub">live · <span id="dashSession">--:--</span></div>
+      <h1 id="dashName">monark</h1>
     </div>
+    <div class="pill"><span class="dot"></span><span class="text">live</span></div>
+  </div>
+  <div class="card">
+    <div class="head"><span>Power · W</span><span class="accent" id="powerSub">—</span></div>
+    <div class="big-num"><span id="powerBig">—</span><small>watts</small></div>
+    <svg class="spark" id="powerSpark" viewBox="0 0 328 64" preserveAspectRatio="none" width="100%" height="64"></svg>
+    <div class="foot-line"><span>avg <b id="powerAvg">—</b></span><span>max <b id="powerMax">—</b></span></div>
+  </div>
+  <div class="grid-3">
+    <div class="tile"><div class="label">Cadence</div><div class="val"><span id="rpmTile">—</span><small>rpm</small></div></div>
+    <div class="tile"><div class="label">Kilopond</div><div class="val"><span id="kpTile">—</span><small>kp</small></div></div>
+    <div class="tile"><div class="label">ADC</div><div class="val"><span id="adcTile">—</span></div></div>
+  </div>
+  <div class="zones">
+    <div class="head"><span>Zones · current</span><span id="zoneLabel">—</span></div>
+    <div class="bars" id="zoneBars"></div>
+  </div>
+</section>
 
-    <div class="card">
-        <h2>Device Settings</h2>
-        <label>Device Name (BLE & WiFi AP)<br>
-            <input type="text" id="deviceName" maxlength="20" placeholder="MonarkPower">
-        </label>
-        <button onclick="saveDeviceName()">Save Name</button>
-        <span id="nameStatus" class="status"></span>
-        <p style="font-size:12px;color:#888;">Restart required after changing name</p>
-
-        <div style="margin-top:20px;padding-top:20px;border-top:1px solid #0f3460;">
-            <label style="display:flex;align-items:center;cursor:pointer;">
-                <input type="checkbox" id="simulatorMode" onchange="saveSimulatorMode()" style="width:auto;margin-right:10px;">
-                <span>Simulator Mode</span>
-            </label>
-            <span id="simStatus" class="status"></span>
-            <p style="font-size:12px;color:#888;">Uses simulated power data instead of real sensors. Restart required.</p>
-        </div>
+<!-- ─── WIFI ─── -->
+<section id="screen-wifi" class="hidden">
+  <div class="toptitle"><div><div class="sub">network</div><h1>wifi</h1></div></div>
+  <div class="card" id="wifiCurrent">
+    <div class="head"><span id="wifiCurrentLabel">disconnected</span><span class="accent" id="wifiCurrentIp"></span></div>
+    <div style="font-size:18px;font-weight:600;margin-top:4px" id="wifiCurrentSsid">—</div>
+    <div class="foot-line"><span>mode <b id="wifiMode">ap</b></span><span id="wifiAux"></span></div>
+  </div>
+  <div class="scan-status" id="scanStatus">tap scan to look for networks</div>
+  <div class="wifi-list" id="wifiList"></div>
+  <div class="btn-row">
+    <button class="btn" onclick="startScan()" id="scanBtn">Scan</button>
+    <button class="btn primary" onclick="showWifiManual()">+ Add</button>
+  </div>
+  <div id="wifiManual" class="hidden">
+    <label>SSID</label>
+    <input type="text" id="wifiSsid" maxlength="32">
+    <label>Password (blank = keep saved)</label>
+    <input type="password" id="wifiPass" maxlength="63">
+    <div class="btn-row">
+      <button class="btn" onclick="hideWifiManual()">Cancel</button>
+      <button class="btn primary" onclick="saveWifi()">Save · Reboot</button>
     </div>
+    <div class="btn-row"><button class="btn danger" onclick="clearWifi()">Forget current</button></div>
+  </div>
+</section>
 
-    <div class="card">
-        <h2>WiFi Connection</h2>
-        <div id="wifiStatus" style="margin-bottom:15px;padding:10px;background:#0f3460;border-radius:5px;">
-            <span id="wifiMode">Loading...</span><br>
-            <span style="font-size:12px;color:#888;">IP: <span id="wifiIP">--</span></span>
-        </div>
-        <label>Network SSID<br>
-            <input type="text" id="wifiSSID" maxlength="32" placeholder="Your WiFi network">
-        </label>
-        <label>Password<br>
-            <input type="password" id="wifiPass" maxlength="63" placeholder="(blank = keep existing password)">
-        </label>
-        <button onclick="saveWiFi()">Connect to WiFi</button>
-        <button onclick="clearWiFi()" style="background:#e94560;margin-left:10px;">Use AP Mode</button>
-        <span id="wifiSaveStatus" class="status"></span>
-        <p style="font-size:12px;color:#888;">Restart required after changing WiFi settings</p>
+<!-- ─── CALIBRATION ─── -->
+<section id="screen-cal" class="hidden">
+  <div class="toptitle"><div><div class="sub">step · <span id="calStepNum">0/4</span></div><h1>calibrate</h1></div></div>
+  <div class="steps" id="calSteps">
+    <div class="seg"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div>
+  </div>
+  <div class="cal-text" id="calMsg">
+    Click <b>Start</b> to begin calibration. You'll set the pendulum to 0 → 2 → 4 → 6 kp in order.
+    <small>The capture reads the live smoothed ADC. Hold the pendulum still; the chrome below shows current load.</small>
+  </div>
+  <div class="card">
+    <div class="head"><span>Live load</span><span class="accent" id="calAdcRaw">—</span></div>
+    <div class="big-num"><span id="calAdcLive">—</span><small>adc</small></div>
+    <div class="adc-bar"><div class="fill" id="calAdcFill" style="width:0%"></div></div>
+    <div class="foot-line">
+      <span>0kp <b id="cal0">—</b></span>
+      <span>2kp <b id="cal2">—</b></span>
+      <span>4kp <b id="cal4">—</b></span>
+      <span>6kp <b id="cal6">—</b></span>
     </div>
+  </div>
+  <div class="btn-row" id="calBtns">
+    <button class="btn" id="calCancelBtn" onclick="cancelCal()" disabled>Cancel</button>
+    <button class="btn primary" id="calNextBtn" onclick="nextCal()">Start</button>
+  </div>
+  <div class="cal-text" style="margin-top:0">
+    <small>Tip: the pendulum rest position drifts. Re-cal if zero load reads more than ~10 ADC counts above the saved 0kp.</small>
+  </div>
+</section>
 
-    <div class="card">
-        <h2>Calibration Wizard</h2>
-        <div id="calWizard">
-            <div id="calInstructions" style="padding:15px;background:#0f3460;border-radius:5px;margin-bottom:15px;">
-                <strong id="calStep">Ready to calibrate</strong><br>
-                <span id="calMessage">Click Start to begin calibration process</span>
-            </div>
-            <div id="calAdcRow" style="margin-bottom:15px;display:none;">
-                <span style="color:#888;">Current ADC: </span>
-                <span id="calAdc" style="font-size:24px;color:#4ecca3;">--</span>
-            </div>
-            <button id="calStartBtn" onclick="startCalibration()">Start Calibration</button>
-            <button id="calNextBtn" onclick="nextCalibration()" style="display:none;">Next Step</button>
-            <button id="calCancelBtn" onclick="cancelCalibration()" style="background:#e94560;display:none;margin-left:10px;">Cancel</button>
-        </div>
-    </div>
+<!-- ─── SETTINGS ─── -->
+<section id="screen-settings" class="hidden">
+  <div class="toptitle"><div><div class="sub">configuration</div><h1>settings</h1></div></div>
+  <label>Device name (BLE / WiFi AP)</label>
+  <input type="text" id="setDevName" maxlength="32">
+  <div class="btn-row" style="margin-top:0"><button class="btn primary" onclick="saveDevName()">Save name</button></div>
 
-    <div class="card">
-        <h2>Manual Calibration</h2>
-        <div class="row">
-            <div class="col"><label>0 kp ADC<br><input type="number" id="adc0"></label></div>
-            <div class="col"><label>2 kp ADC<br><input type="number" id="adc2"></label></div>
-            <div class="col"><label>4 kp ADC<br><input type="number" id="adc4"></label></div>
-            <div class="col"><label>6 kp ADC<br><input type="number" id="adc6"></label></div>
-        </div>
-        <div class="row" style="margin-top:15px;">
-            <div class="col"><label>Cycle Constant<br><input type="number" id="cycleConstant" step="0.01" min="0.5" max="2.0"></label></div>
-            <div class="col"></div>
-            <div class="col"></div>
-            <div class="col"></div>
-        </div>
-        <button onclick="saveCalibration()">Save Calibration</button>
-        <span id="calStatus" class="status"></span>
-        <p style="font-size:12px;color:#888;">Restart required for cycle constant change</p>
-    </div>
+  <div class="row">
+    <div><div class="lbl">Cycle constant</div><div class="val" id="setCycCurrent">1.05</div></div>
+    <span class="arr">stored in nvs</span>
+  </div>
+  <div class="row">
+    <div><div class="lbl">Power simulator</div><div class="val" id="setSimVal">off</div></div>
+    <div class="toggle off" id="setSimToggle" onclick="toggleSim()"><div class="knob"></div></div>
+  </div>
+  <div class="row">
+    <div><div class="lbl">Cadence target</div><div class="val">80–100 rpm</div></div>
+    <span class="arr">device chrome</span>
+  </div>
 
-    <div class="card">
-        <h2>Firmware Update</h2>
-        <form method='POST' action='/update' enctype='multipart/form-data'>
-            <label>Select Firmware File (.bin)<br>
-                <input type='file' name='update' accept='.bin'>
-            </label>
-            <button type='submit'>Update Firmware</button>
-        </form>
-        <p style="font-size:12px;color:#888;">Device will restart automatically after update.</p>
-    </div>
+  <div class="btn-row">
+    <button class="btn" onclick="rebootDevice()">Reboot</button>
+    <button class="btn danger" onclick="clearWifi()">Forget WiFi</button>
+  </div>
 
-    <div class="card" style="text-align:center;">
-        <h2>Device Control</h2>
-        <button onclick="rebootDevice()" style="background:#e94560;padding:20px 40px;font-size:18px;">Reboot Device</button>
-        <span id="rebootStatus" class="status"></span>
-        <p style="font-size:12px;color:#888;margin-top:15px;">Required after changing device name or WiFi settings</p>
-    </div>
+  <label>OTA firmware update</label>
+  <input type="file" id="otaFile" accept=".bin" style="margin:0 14px 10px;color:var(--dim);font-family:var(--fm);font-size:11px">
+  <div class="btn-row" style="margin-top:0"><button class="btn primary" onclick="otaUpload()" id="otaBtn">Upload &amp; flash</button></div>
 
-    <script>
-        // Track calibration state to avoid overwriting manual edits
-        let lastCalStep = -1;
+  <div class="fwfoot" id="fwFoot">monark · esp32-c6 · fw build</div>
+</section>
 
-        // Single unified status fetch at 1Hz
-        async function fetchStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
+<div id="ipStrip" class="ip-strip">
+  <span id="dotName">● <span id="devShort">monark</span></span>
+  <span class="ip" id="ipAddr">—</span>
+</div>
+<nav class="tabs">
+  <button data-tab="dash" class="active" onclick="setTab('dash')">Dash</button>
+  <button data-tab="wifi" onclick="setTab('wifi')">WiFi</button>
+  <button data-tab="cal" onclick="setTab('cal')">Calib</button>
+  <button data-tab="settings" onclick="setTab('settings')">Set</button>
+</nav>
+<div id="toast" class="toast hidden"></div>
 
-                // Power display
-                document.getElementById('power').textContent = Math.round(data.power);
-                document.getElementById('rpm').textContent = Math.round(data.rpm);
-                document.getElementById('kp').textContent = data.kp.toFixed(2);
-                document.getElementById('adc').textContent = data.adc.toFixed(2);
+<script>
+// ───── Tab management ─────
+function setTab(name){
+  ['dash','wifi','cal','settings'].forEach(n=>{
+    document.getElementById('screen-'+n).classList.toggle('hidden', n!==name);
+  });
+  document.querySelectorAll('nav.tabs button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab===name);
+  });
+  if (name==='wifi') refreshWifi();
+  if (name==='cal')  refreshCal();
+  if (name==='settings') refreshSettings();
+}
 
-                // Calibration wizard
-                updateCalibrationUI(data.cal);
-            } catch (e) {}
-        }
+function toast(msg, isError){
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.toggle('error', !!isError); el.classList.remove('hidden');
+  clearTimeout(window._t);
+  window._t = setTimeout(()=>el.classList.add('hidden'), 3500);
+}
 
-        function updateCalibrationUI(cal) {
-            const stepNum = cal.step;
-            const kpOrder = [0, 0, 2, 4, 6, 0];
+// ───── Dash polling + sparkline ─────
+const POW_HIST_N = 80;
+const powHist = [];
+let sessionStart = Date.now();
+let powerMax = 0, powerSum = 0, powerN = 0;
 
-            // Only show live ADC when actively calibrating
-            if (stepNum >= 1 && stepNum <= 4) {
-                document.getElementById('calAdcRow').style.display = 'block';
-                document.getElementById('calAdc').textContent = cal.adc.toFixed(2);
-            } else {
-                document.getElementById('calAdcRow').style.display = 'none';
-            }
+function fmtClock(ms){ const s=Math.floor(ms/1000); const m=Math.floor(s/60); const h=Math.floor(m/60); return (h>0?String(h)+':':'')+String(m%60).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+function fmtMaybe(v, dp){ if(v==null) return '—'; return Number(v).toFixed(dp||0); }
 
-            if (stepNum === 0) {
-                document.getElementById('calStep').textContent = 'Ready to calibrate';
-                document.getElementById('calMessage').textContent = 'Click Start to begin (0 -> 2 -> 4 -> 6 kp)';
-                document.getElementById('calStartBtn').style.display = 'inline-block';
-                document.getElementById('calNextBtn').style.display = 'none';
-                document.getElementById('calCancelBtn').style.display = 'none';
-            } else if (stepNum >= 1 && stepNum <= 4) {
-                const kpVal = kpOrder[stepNum];
-                document.getElementById('calStep').textContent = 'Step ' + stepNum + '/4: Set ' + kpVal + ' kp';
-                document.getElementById('calMessage').textContent = 'Position pendulum at ' + kpVal + ' kp, click Next';
-                document.getElementById('calStartBtn').style.display = 'none';
-                document.getElementById('calNextBtn').style.display = 'inline-block';
-                document.getElementById('calCancelBtn').style.display = 'inline-block';
-            } else if (stepNum === 5) {
-                document.getElementById('calStep').textContent = 'Calibration Complete!';
-                document.getElementById('calMessage').textContent = '0kp=' + cal.values.adc0 + ' 2kp=' + cal.values.adc2 + ' 4kp=' + cal.values.adc4 + ' 6kp=' + cal.values.adc6;
-                document.getElementById('calStartBtn').style.display = 'inline-block';
-                document.getElementById('calNextBtn').style.display = 'none';
-                document.getElementById('calCancelBtn').style.display = 'none';
-                // Only fetch calibration once when transitioning to step 5
-                if (lastCalStep !== 5) {
-                    fetchCalibration();
-                }
-            }
-            lastCalStep = stepNum;
-        }
+function drawSpark(){
+  const svg = document.getElementById('powerSpark');
+  const W=328, H=64;
+  if (powHist.length < 2){ svg.innerHTML=''; return; }
+  const max = Math.max(...powHist, 1);
+  const pts = powHist.map((v,i)=>[i*(W/(POW_HIST_N-1)), H - (v/max)*H]);
+  const d = pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  svg.innerHTML = '<path d="'+d+' L'+W+','+H+' L0,'+H+' Z" fill="rgba(255,138,20,.10)"/>'+
+                  '<path d="'+d+'" fill="none" stroke="#ff8a14" stroke-width="1.5"/>';
+}
 
-        async function fetchCalibration() {
-            try {
-                const res = await fetch('/api/calibration');
-                const data = await res.json();
-                document.getElementById('adc0').value = data.adc0;
-                document.getElementById('adc2').value = data.adc2;
-                document.getElementById('adc4').value = data.adc4;
-                document.getElementById('adc6').value = data.adc6;
-                document.getElementById('cycleConstant').value = data.cycleConstant;
-            } catch (e) {}
-        }
+function powerZone(p){
+  // Rough zones for an FTP of ~250W (Monark ergometer rider). Bin 1..7.
+  const ftp = 250;
+  if (p<.55*ftp) return 1; if (p<.75*ftp) return 2; if (p<.9*ftp) return 3;
+  if (p<1.05*ftp) return 4; if (p<1.2*ftp) return 5; if (p<1.5*ftp) return 6; return 7;
+}
 
-        async function fetchDeviceName() {
-            try {
-                const res = await fetch('/api/device');
-                const data = await res.json();
-                document.getElementById('deviceName').value = data.name;
-                document.getElementById('title').textContent = data.name;
-            } catch (e) {}
-        }
+function buildZoneBars(active){
+  const colors=['#7a6f5e','#a3c46a','#ffb84d','#ff8a14','#e85a3c','#c63a1f','#7a1f12'];
+  const heights=[24,40,55,38,28,18,12]; // visual rhythm
+  const wrap = document.getElementById('zoneBars'); wrap.innerHTML='';
+  for(let i=0;i<7;i++){
+    const col=document.createElement('div'); col.className='col';
+    const b=document.createElement('div'); b.className='b';
+    const isActive = (i+1)===active;
+    b.style.height = (isActive?heights[i]+8:heights[i])+'px';
+    b.style.background = colors[i];
+    b.style.opacity = isActive ? 1 : .55;
+    const lab=document.createElement('span'); lab.textContent='Z'+(i+1);
+    if(isActive) lab.style.color='var(--accent)';
+    col.appendChild(b); col.appendChild(lab); wrap.appendChild(col);
+  }
+}
 
-        async function fetchSimulatorMode() {
-            try {
-                const res = await fetch('/api/simulator');
-                const data = await res.json();
-                document.getElementById('simulatorMode').checked = data.enabled;
-            } catch (e) {}
-        }
+async function pollDash(){
+  try{
+    const res = await fetch('/api/status');
+    const d = await res.json();
+    const p = d.power || 0, r = d.rpm || 0, kp = d.kp || 0, adc = d.adc || 0;
+    document.getElementById('powerBig').textContent = Math.round(p);
+    document.getElementById('powerSub').textContent = '3s · '+Math.round(p);
+    document.getElementById('rpmTile').textContent = Math.round(r);
+    document.getElementById('kpTile').textContent = kp.toFixed(2);
+    document.getElementById('adcTile').textContent = Math.round(adc);
+    if(p>0){ powerSum+=p; powerN++; if(p>powerMax) powerMax=p; }
+    document.getElementById('powerAvg').textContent = powerN? Math.round(powerSum/powerN) : '—';
+    document.getElementById('powerMax').textContent = powerMax? Math.round(powerMax) : '—';
+    document.getElementById('dashSession').textContent = fmtClock(Date.now()-sessionStart);
+    powHist.push(p); while(powHist.length>POW_HIST_N) powHist.shift();
+    drawSpark();
+    const z = p>10? powerZone(p) : 0;
+    buildZoneBars(z);
+    document.getElementById('zoneLabel').textContent = z? ('Z'+z) : '—';
+  } catch(e){ /* ignore transient errors */ }
+}
+buildZoneBars(0);
+setInterval(pollDash, 1000);
+pollDash();
 
-        async function saveSimulatorMode() {
-            const status = document.getElementById('simStatus');
-            const enabled = document.getElementById('simulatorMode').checked;
-            try {
-                const res = await fetch('/api/simulator', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ enabled: enabled })
-                });
-                const result = await res.json();
-                status.textContent = result.success ? 'Saved! Restart required.' : (result.error || 'Error');
-                status.className = 'status ' + (result.success ? 'success' : 'error');
-                setTimeout(function() { status.textContent = ""; }, 3000);
-            } catch (e) {
-                status.textContent = 'Network error';
-                status.className = 'status error';
-            }
-        }
+// ───── WiFi ─────
+let scanTimer = null;
+async function refreshWifi(){
+  try {
+    const res = await fetch('/api/wifi');
+    const d = await res.json();
+    const ip = d.ip || '';
+    const isAP = (d.mode||'').toLowerCase()==='ap';
+    document.getElementById('wifiCurrentLabel').textContent = isAP ? 'access point' : 'connected';
+    document.getElementById('wifiCurrentIp').textContent = ip;
+    document.getElementById('wifiCurrentSsid').textContent = d.ssid || (isAP ? d.ap_ssid || 'monark-ap' : '—');
+    document.getElementById('wifiMode').textContent = isAP ? 'ap' : 'sta';
+    document.getElementById('wifiAux').textContent = d.rssi != null ? ('rssi '+d.rssi+' dBm') : '';
+    document.getElementById('ipAddr').textContent = ip || '—';
+  } catch(e) {}
+}
 
-        async function saveCalibration() {
-            const status = document.getElementById('calStatus');
-            const data = {
-                adc0: parseInt(document.getElementById('adc0').value),
-                adc2: parseInt(document.getElementById('adc2').value),
-                adc4: parseInt(document.getElementById('adc4').value),
-                adc6: parseInt(document.getElementById('adc6').value),
-                cycleConstant: parseFloat(document.getElementById('cycleConstant').value)
-            };
-            try {
-                const res = await fetch('/api/calibration', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(data)
-                });
-                const result = await res.json();
-                status.textContent = result.success ? 'Saved!' : (result.error || 'Error');
-                status.className = 'status ' + (result.success ? 'success' : 'error');
-                setTimeout(function() { status.textContent = ""; }, 3000);
-            } catch (e) {
-                status.textContent = 'Error';
-                status.className = 'status error';
-            }
-        }
+async function startScan(){
+  const btn = document.getElementById('scanBtn'); btn.disabled = true;
+  document.getElementById('scanStatus').textContent = 'scanning...';
+  document.getElementById('wifiList').innerHTML = '';
+  await fetch('/api/wifi/scan', {method:'POST'});
+  if (scanTimer) clearInterval(scanTimer);
+  scanTimer = setInterval(pollScan, 1500);
+  pollScan();
+}
+async function pollScan(){
+  const res = await fetch('/api/wifi/scan');
+  const d = await res.json();
+  if (d.status === 'done') {
+    clearInterval(scanTimer); scanTimer=null;
+    document.getElementById('scanBtn').disabled = false;
+    renderScan(d.results || []);
+  } else {
+    document.getElementById('scanStatus').textContent = d.status;
+  }
+}
+function rssiToBars(rssi){ if(rssi>=-55)return 4; if(rssi>=-66)return 3; if(rssi>=-77)return 2; return 1; }
+function renderScan(list){
+  const wrap = document.getElementById('wifiList'); wrap.innerHTML = '';
+  if (!list.length) { document.getElementById('scanStatus').textContent = 'no networks visible'; return; }
+  document.getElementById('scanStatus').textContent = list.length+' networks';
+  list.sort((a,b)=>b.rssi-a.rssi).forEach(n=>{
+    const row = document.createElement('div'); row.className='wifi-row';
+    const bars = rssiToBars(n.rssi);
+    row.innerHTML = '<div><div class="ssid">'+escapeHtml(n.ssid||'(hidden)')+'</div>'+
+      '<div class="meta">'+(n.secure?'WPA2':'OPEN')+' · ch'+n.channel+' · '+n.rssi+'dBm</div></div>'+
+      '<div class="right"><div class="bars">'+
+      [1,2,3,4].map(i=>'<i'+(i<=bars?' class="on"':'')+'></i>').join('')+
+      '</div></div>';
+    row.onclick = ()=>{
+      document.getElementById('wifiSsid').value = n.ssid;
+      document.getElementById('wifiPass').value = '';
+      showWifiManual();
+    };
+    wrap.appendChild(row);
+  });
+}
+function showWifiManual(){ document.getElementById('wifiManual').classList.remove('hidden'); }
+function hideWifiManual(){ document.getElementById('wifiManual').classList.add('hidden'); }
+async function saveWifi(){
+  const ssid=document.getElementById('wifiSsid').value.trim();
+  const pass=document.getElementById('wifiPass').value;
+  if(!ssid){ toast('SSID required', true); return; }
+  const body = pass ? {ssid, password:pass} : {ssid};
+  const res = await fetch('/api/wifi', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const d = await res.json();
+  toast(d.success ? 'saved · reboot to apply' : (d.error||'error'), !d.success);
+}
+async function clearWifi(){
+  if(!confirm('Forget saved WiFi credentials?')) return;
+  await fetch('/api/wifi', {method:'DELETE'});
+  toast('cleared · reboot to apply');
+}
 
-        async function saveDeviceName() {
-            const status = document.getElementById('nameStatus');
-            const name = document.getElementById('deviceName').value.trim();
-            if (!name || name.length > 20) {
-                status.textContent = 'Name must be 1-20 characters';
-                status.className = 'status error';
-                return;
-            }
-            try {
-                const res = await fetch('/api/device', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ name: name })
-                });
-                const result = await res.json();
-                status.textContent = result.success ? 'Saved! Restart device.' : (result.error || 'Error');
-                status.className = 'status ' + (result.success ? 'success' : 'error');
-                if (result.success) {
-                    document.getElementById('title').textContent = name;
-                }
-                setTimeout(function() { status.textContent = ""; }, 3000);
-            } catch (e) {
-                status.textContent = 'Network error';
-                status.className = 'status error';
-            }
-        }
+// ───── Calibration ─────
+const CAL_LABELS = ['ready','set 0kp','set 2kp','set 4kp','set 6kp','done'];
+const CAL_KP = [null, 0, 2, 4, 6];
 
-        async function fetchWiFi() {
-            try {
-                const res = await fetch('/api/wifi');
-                const data = await res.json();
-                document.getElementById('wifiSSID').value = data.ssid || "";
-                document.getElementById('wifiIP').textContent = data.ip;
-                if (data.isAPMode) {
-                    document.getElementById('wifiMode').innerHTML = '<span style="color:#e94560;">AP Mode</span> (Direct connection)';
-                } else if (data.connected) {
-                    document.getElementById('wifiMode').innerHTML = '<span style="color:#4ecca3;">Connected</span> to ' + data.ssid;
-                } else {
-                    document.getElementById('wifiMode').innerHTML = '<span style="color:#e94560;">Disconnected</span>';
-                }
-            } catch (e) {}
-        }
+async function refreshCal(){
+  const res = await fetch('/api/status');
+  const d = await res.json();
+  const step = d.cal && d.cal.step != null ? d.cal.step : 0;
+  document.getElementById('calStepNum').textContent = step+'/4';
+  ['cal0','cal2','cal4','cal6'].forEach((id,i)=>{
+    const v = d.cal && d.cal.values ? d.cal.values['adc'+[0,2,4,6][i]] : 0;
+    document.getElementById(id).textContent = v||0;
+  });
+  // step indicator
+  const segs = document.querySelectorAll('#calSteps .seg');
+  segs.forEach((s,i)=>s.classList.toggle('on', i < step));
+  // live ADC
+  const adc = d.cal ? d.cal.adc : (d.adc||0);
+  document.getElementById('calAdcLive').textContent = Math.round(adc);
+  document.getElementById('calAdcRaw').textContent = adc.toFixed ? adc.toFixed(1) : adc;
+  // map 0..1023 to 0..100% width
+  const pct = Math.min(100, Math.max(0, (adc/1023)*100));
+  document.getElementById('calAdcFill').style.width = pct.toFixed(1)+'%';
 
-        async function saveWiFi() {
-            const status = document.getElementById('wifiSaveStatus');
-            const ssid = document.getElementById('wifiSSID').value.trim();
-            const password = document.getElementById('wifiPass').value;
-            if (!ssid) {
-                status.textContent = 'SSID required';
-                status.className = 'status error';
-                return;
-            }
-            // Empty password field means "keep the existing saved password"
-            // (the field is always blank on page load — we never display the saved one).
-            const body = password.length > 0 ? { ssid: ssid, password: password } : { ssid: ssid };
-            try {
-                const res = await fetch('/api/wifi', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(body)
-                });
-                const result = await res.json();
-                status.textContent = result.success ? 'Saved! Restart device.' : (result.error || 'Error');
-                status.className = 'status ' + (result.success ? 'success' : 'error');
-            } catch (e) {
-                status.textContent = 'Error';
-                status.className = 'status error';
-            }
-        }
+  const btnNext = document.getElementById('calNextBtn');
+  const btnCancel = document.getElementById('calCancelBtn');
+  if (step === 0) {
+    btnNext.textContent = 'Start';
+    btnCancel.disabled = true;
+    document.getElementById('calMsg').innerHTML = "Click <b>Start</b> to begin calibration. You'll set the pendulum to 0 → 2 → 4 → 6 kp in order.<small>The capture reads the live smoothed ADC. Hold the pendulum still; the chrome above shows current load.</small>";
+  } else if (step >= 1 && step <= 4) {
+    const kp = CAL_KP[step];
+    btnNext.textContent = (step === 4 ? 'Save & Finish' : 'Capture & Next →');
+    btnCancel.disabled = false;
+    document.getElementById('calMsg').innerHTML = "Set pendulum to <b>"+kp+" kp</b> and hold steady. When the live ADC settles (the bar above stops moving), tap <b>Capture</b>.";
+  } else if (step === 5) {
+    btnNext.textContent = 'Done';
+    btnCancel.disabled = true;
+    document.getElementById('calMsg').innerHTML = "Calibration <b>saved</b>. New ADC quartet active. <small>Tap Done to clear, or revisit any time.</small>";
+  }
+}
+async function nextCal(){
+  const res = await fetch('/api/calibrate/next', {method:'POST'});
+  const d = await res.json();
+  if(d.success === false) toast(d.error||'error', true);
+  refreshCal();
+}
+async function cancelCal(){
+  await fetch('/api/calibrate/cancel', {method:'POST'});
+  refreshCal();
+}
+setInterval(()=>{ if(!document.getElementById('screen-cal').classList.contains('hidden')) refreshCal(); }, 500);
 
-        async function clearWiFi() {
-            const status = document.getElementById('wifiSaveStatus');
-            try {
-                const res = await fetch('/api/wifi', { method: 'DELETE' });
-                const result = await res.json();
-                status.textContent = result.success ? 'Cleared! Restart for AP mode.' : 'Error';
-                status.className = 'status ' + (result.success ? 'success' : 'error');
-                document.getElementById('wifiSSID').value = "";
-                document.getElementById('wifiPass').value = "";
-            } catch (e) {
-                status.textContent = 'Error';
-                status.className = 'status error';
-            }
-        }
+// ───── Settings ─────
+async function refreshSettings(){
+  try {
+    const dev = await (await fetch('/api/device')).json();
+    document.getElementById('setDevName').value = dev.name || 'monark';
+    document.getElementById('devShort').textContent = dev.name || 'monark';
+    document.getElementById('dashName').textContent = (dev.name || 'monark').toLowerCase();
+    const cal = await (await fetch('/api/calibration')).json();
+    document.getElementById('setCycCurrent').textContent = (cal.cycleConstant!=null? cal.cycleConstant.toFixed(3) : '1.05');
+    const sim = await (await fetch('/api/simulator')).json();
+    setSimUi(sim.enabled);
+  } catch(e){}
+}
+function setSimUi(on){
+  const t = document.getElementById('setSimToggle');
+  t.classList.toggle('on', !!on); t.classList.toggle('off', !on);
+  document.getElementById('setSimVal').textContent = on ? 'on' : 'off';
+}
+async function toggleSim(){
+  const cur = document.getElementById('setSimToggle').classList.contains('on');
+  await fetch('/api/simulator', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: !cur})});
+  setSimUi(!cur);
+  toast('simulator '+(!cur?'on':'off')+' · reboot to apply');
+}
+async function saveDevName(){
+  const name = document.getElementById('setDevName').value.trim();
+  if(!name){ toast('name required', true); return; }
+  await fetch('/api/device', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  toast('saved · reboot to apply');
+  document.getElementById('devShort').textContent = name;
+  document.getElementById('dashName').textContent = name.toLowerCase();
+}
+async function rebootDevice(){
+  if(!confirm('Reboot device?')) return;
+  await fetch('/api/reboot', {method:'POST'});
+  toast('rebooting…');
+}
+async function otaUpload(){
+  const f = document.getElementById('otaFile').files[0];
+  if(!f){ toast('pick a .bin file', true); return; }
+  const btn = document.getElementById('otaBtn'); btn.disabled = true; btn.textContent='Uploading…';
+  const fd = new FormData(); fd.append('firmware', f);
+  try {
+    const res = await fetch('/update', {method:'POST', body: fd});
+    const txt = await res.text();
+    toast(txt === 'OK' ? 'flashed · rebooting' : 'flash failed', txt !== 'OK');
+  } catch(e){ toast('upload error', true); }
+  btn.disabled = false; btn.textContent='Upload & flash';
+}
 
-        // Calibration Wizard
-        async function startCalibration() {
-            try {
-                const res = await fetch('/api/calibrate/start', { method: 'POST' });
-                const result = await res.json();
-            } catch (e) {}
-        }
+function escapeHtml(s){return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
-        async function nextCalibration() {
-            const btn = document.getElementById('calNextBtn');
-            btn.disabled = true;
-            btn.textContent = 'Capturing...';
-            try {
-                const res = await fetch('/api/calibrate/next', { method: 'POST' });
-                const result = await res.json();
-            } catch (e) {}
-            btn.disabled = false;
-            btn.textContent = 'Next Step';
-        }
-
-        async function cancelCalibration() {
-            try {
-                const res = await fetch('/api/calibrate/cancel', { method: 'POST' });
-            } catch (e) {}
-        }
-
-        async function rebootDevice() {
-            const status = document.getElementById('rebootStatus');
-            if (!confirm('Reboot the device now?')) return;
-            try {
-                status.textContent = 'Rebooting...';
-                status.className = 'status success';
-                await fetch('/api/reboot', { method: 'POST' });
-            } catch (e) {}
-            startRebootCountdown();
-        }
-
-        function startRebootCountdown() {
-            const status = document.getElementById('rebootStatus');
-            let seconds = 10;
-            status.textContent = 'Reloading in ' + seconds + 's...';
-            status.className = 'status success';
-            const interval = setInterval(function() {
-                seconds--;
-                if (seconds <= 0) {
-                    clearInterval(interval);
-                    status.textContent = 'Reloading...';
-                    location.reload();
-                } else {
-                    status.textContent = 'Reloading in ' + seconds + 's...';
-                }
-            }, 1000);
-        }
-
-        // Initial fetches (one-time)
-        fetchDeviceName();
-        fetchSimulatorMode();
-        fetchCalibration();
-        fetchWiFi();
-
-        // Single 1Hz polling for power + calibration status
-        fetchStatus();
-        setInterval(fetchStatus, 1000);
-    </script>
+// initial load
+refreshWifi();
+refreshSettings();
+</script>
 </body>
 </html>
 )rawhtml";
