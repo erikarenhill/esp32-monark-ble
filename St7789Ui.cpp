@@ -112,8 +112,11 @@ void St7789Ui::begin() {
     return;
   }
 
+  // The Arduino_ST7789 ctor with IPS=true already sends INVON during begin();
+  // calling invertDisplay(true) again here re-toggles it to the wrong polarity
+  // and the panel renders 0x0000 as bright instead of black. invertDisplay
+  // is therefore *not* called explicitly — the ctor handles it.
   _gfx->fillScreen(COL_BG);
-  _gfx->invertDisplay(true); // BGR + inversion-on per the panel's setup
 
   ledcWrite(PIN_BL, BL_DUTY);
   _ready = true;
@@ -405,6 +408,17 @@ void St7789Ui::setStatus(const char* text) {
   strncpy(_status, text, sizeof(_status) - 1);
   _status[sizeof(_status) - 1] = '\0';
   drawStatusBar();
+}
+
+void St7789Ui::clearAndShowRide() {
+  if (!_ready) return;
+  _gfx->fillScreen(COL_BG);
+  // Force the value-cache to redraw on next showPower().
+  _lastPower = -9999.0f;
+  _lastRpm = -1.0f;
+  _lastAvgInt = _lastMaxInt = -2;
+  _lastFullRedrawMs = 0;
+  drawStaticChrome();
 }
 
 // ─── Cinder boot splash ──────────────────────────────────────────────────────

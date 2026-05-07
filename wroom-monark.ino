@@ -187,6 +187,13 @@ void setup() {
                            wifiLine,
                            "> ride         ready");
     delay(1200);
+    // Wipe the splash so leftover MONARK / rotor / init lines don't bleed
+    // through under the ride chrome.
+    display->clearAndShowRide();
+    // Re-assert the IP status string on the new clean footer.
+    display->setStatus(webServer->isAPMode()
+        ? (String("AP ") + webServer->getIPAddress()).c_str()
+        : (String("WIFI ") + webServer->getIPAddress()).c_str());
   }
 
   Serial.println("System started (LCD + BLE + WiFi).");

@@ -36,6 +36,11 @@ public:
                           const char* /*line2*/ = nullptr,
                           const char* /*line3*/ = nullptr) {}
 
+    // Wipe the panel and re-paint just the ride chrome (no live values yet).
+    // Use this when transitioning *out* of the boot splash so leftover splash
+    // pixels don't bleed through under the ride view. Default: noop.
+    virtual void clearAndShowRide() {}
+
     // Interaction
     virtual void update() {}
     virtual bool isActionRequested() { return false; }

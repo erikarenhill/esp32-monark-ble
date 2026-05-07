@@ -366,9 +366,12 @@ void PowerWebServer::setupRoutes() {
         handleUpdate(request, filename, index, data, len, final);
     });
 
-    // Simple web page
-    _server.on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
-        String html = R"rawhtml(
+    // Cinder mobile SPA. The HTML/CSS/JS lives in flash (PROGMEM) — we used to
+    // build a 28 KB String per request which competed for fragmented heap and
+    // could fail under load on the C6. The PROGMEM literal + `send_P` zero-
+    // copies straight from flash so the AP-mode UI is reliable even after
+    // long uptimes.
+    static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -875,7 +878,10 @@ refreshSettings();
 </body>
 </html>
 )rawhtml";
-        request->send(200, "text/html", html);
+    _server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+        // Chunked PROGMEM response — no String copy, no heap pressure.
+        request->send_P(200, "text/html", reinterpret_cast<const uint8_t*>(INDEX_HTML),
+                        sizeof(INDEX_HTML) - 1);
     });
 }
 

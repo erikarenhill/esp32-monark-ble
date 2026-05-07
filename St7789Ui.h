@@ -28,6 +28,10 @@ public:
   void showBoot(uint8_t progress, const char* line1 = nullptr,
                 const char* line2 = nullptr, const char* line3 = nullptr) override;
 
+  // Wipe the panel and re-paint just the ride chrome — call this when leaving
+  // the boot splash so leftover splash pixels don't bleed through.
+  void clearAndShowRide() override;
+
 private:
   Arduino_DataBus* _bus = nullptr;
   Arduino_GFX* _gfx = nullptr;
