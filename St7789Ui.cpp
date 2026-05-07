@@ -15,19 +15,25 @@ static constexpr int16_t PANEL_W = 172;
 static constexpr int16_t PANEL_H = 320;
 static constexpr int16_t COL_OFFSET = 34;
 
-// ─── Cinder palette (RGB565 from the design's hex tokens) ────────────────────
-//   bg     #0e0c0a → 0x0820 (visually black on this panel)
-//   panel  #181613 → 0x1082
-//   ink    #f3ece0 → 0xF7BC (warm bone)
+// ─── Cinder palette ──────────────────────────────────────────────────────────
+// Hex tokens from themes.jsx mapped to RGB565. Background uses pure black
+// (0x0000) instead of the design's #0e0c0a (0x1041) — on this Waveshare panel
+// + Arduino_GFX combo the warm-dark value renders as a visibly bright off-
+// white instead of charcoal (a quirk of how invertDisplay interacts with
+// non-zero low values). Pure black gives the same visual goal — a
+// near-black background — without the colour inversion artefact.
+//   bg     #0e0c0a → 0x0000 (rendered as true black)
+//   panel  #181613 → 0x1882
+//   ink    #f3ece0 → 0xF77C (warm bone)
 //   dim    #7a6f5e → 0x7B6B (warm grey)
 //   rule   #2a251e → 0x2923 (dark warm)
-//   accent #ff8a14 → 0xFC42 (amber — primary)
+//   accent #ff8a14 → 0xFC42 (amber primary)
 //   accent2#ffb84d → 0xFDC9 (warm highlight)
 //   ok     #a3c46a → 0xA62D (muted green)
 //   warn   #e85a3c → 0xEACB
-static constexpr uint16_t COL_BG     = 0x0820;
-static constexpr uint16_t COL_PANEL  = 0x1082;
-static constexpr uint16_t COL_INK    = 0xF7BC;
+static constexpr uint16_t COL_BG     = 0x0000;
+static constexpr uint16_t COL_PANEL  = 0x1882;
+static constexpr uint16_t COL_INK    = 0xF77C;
 static constexpr uint16_t COL_DIM    = 0x7B6B;
 static constexpr uint16_t COL_RULE   = 0x2923;
 static constexpr uint16_t COL_ACCENT = 0xFC42;
@@ -57,16 +63,28 @@ static constexpr uint8_t  BL_DUTY     = 180;
 //300 │ WEB             192.168.4.1    │  size 2 footer with accent IP
 //318 └────────────────────────────────┘
 
-static constexpr int16_t POW_NUM_Y   = 22;
+// Layout:
+//   y=0..14    tick rule
+//   y=22..30   POWER label (size 1) + "3s NNN" sub-line on right
+//   y=36..92   POWER number (size 7 = 56 px tall)
+//   y=98..110  power history tick mosaic (12 px)
+//   y=116..124 AVG / MAX line
+//   y=132      mid rule
+//   y=138..146 CADENCE label + "RPM" right
+//   y=152..208 CADENCE number
+//   y=216..220 cadence target band
+//   y=298..318 footer (IP)
+static constexpr int16_t POW_LABEL_Y = 22;
+static constexpr int16_t POW_NUM_Y   = 36;
 static constexpr int16_t POW_NUM_H   = 56;        // size 7 cell height
-static constexpr int16_t TICK_Y      = 84;
+static constexpr int16_t TICK_Y      = 98;
 static constexpr int16_t TICK_H      = 12;
-static constexpr int16_t AVGMAX_Y    = 102;
-static constexpr int16_t RULE_MID_Y  = 116;
-static constexpr int16_t CAD_LABEL_Y = 122;
-static constexpr int16_t CAD_NUM_Y   = 138;
+static constexpr int16_t AVGMAX_Y    = 116;
+static constexpr int16_t RULE_MID_Y  = 132;
+static constexpr int16_t CAD_LABEL_Y = 138;
+static constexpr int16_t CAD_NUM_Y   = 152;
 static constexpr int16_t CAD_NUM_H   = 56;
-static constexpr int16_t CAD_BAND_Y  = 200;
+static constexpr int16_t CAD_BAND_Y  = 216;
 static constexpr int16_t CAD_BAND_H  = 4;
 static constexpr int16_t FOOTER_Y    = 300;       // size 2 footer
 
@@ -131,24 +149,30 @@ void St7789Ui::drawStaticChrome() {
   if (!_ready) return;
 
   _gfx->setTextWrap(false);
-  _gfx->fillScreen(COL_BG);
 
-  // Top accent rule: 1 amber pixel line + 1 dim rule below.
-  _gfx->drawFastHLine(0, 0, PANEL_W, COL_ACCENT);
-  _gfx->drawFastHLine(0, 1, PANEL_W, COL_RULE);
+  // Top tick rule (matches the Boot screen's calibrated-feel ruler).
+  // 30 vertical ticks, every 5th one taller. Spans the panel width.
+  _gfx->fillRect(0, 0, PANEL_W, 14, COL_BG);
+  for (int i = 0; i < 30; i++) {
+    int x = 6 + (i * (PANEL_W - 12)) / 29;
+    int h = (i % 5 == 0) ? 6 : 3;
+    uint16_t c = (i % 5 == 0) ? COL_DIM : COL_RULE;
+    _gfx->drawFastVLine(x, 14 - h, h, c);
+  }
+  _gfx->drawFastHLine(0, 14, PANEL_W, COL_RULE);
 
   // POWER label row
+  _gfx->fillRect(0, POW_LABEL_Y, PANEL_W, 8, COL_BG);
   _gfx->setTextColor(COL_DIM, COL_BG);
   _gfx->setTextSize(1);
-  _gfx->setCursor(8, 8);
+  _gfx->setCursor(8, POW_LABEL_Y);
   _gfx->print("POWER");
-
-  // (the "3s NNN" right-side updates with the live value in showPower())
 
   // Mid-rule between POWER and CADENCE
   _gfx->drawFastHLine(0, RULE_MID_Y, PANEL_W, COL_RULE);
 
   // CADENCE label row
+  _gfx->fillRect(0, CAD_LABEL_Y, PANEL_W, 8, COL_BG);
   _gfx->setTextColor(COL_DIM, COL_BG);
   _gfx->setTextSize(1);
   _gfx->setCursor(8, CAD_LABEL_Y);
@@ -161,20 +185,26 @@ void St7789Ui::drawStaticChrome() {
   // Cadence target band: a dim rule with a brighter middle (target zone 80–100 rpm)
   drawCadenceTargetBand();
 
-  // Footer
+  // Footer (IP)
   drawStatusBar();
 }
 
-// Right-justified number into a fixed-size box, clearing it first.
+// Left-aligned big number with an optional small unit baseline-aligned beside.
+// Clears the entire fixed-width box first so changing widths don't leave
+// trailing pixels. Matches the Cinder ride layout where "238" sits at the
+// left and a small "w" follows.
 void St7789Ui::drawNumber(int x, int y, int w, int h, uint8_t textSize, const char* text) {
   _gfx->fillRect(x, y, w, h, COL_BG);
-  int charW = 6 * textSize;
-  int textW = (int)strlen(text) * charW;
-  int tx = x + (w - textW); // right-justified
-  if (tx < x) tx = x;
-  _gfx->setCursor(tx, y);
+  _gfx->setCursor(x, y);
   _gfx->setTextSize(textSize);
   _gfx->print(text);
+}
+
+// Helper: print the number left, then the unit right after it. Keeps the
+// number clear-and-redraw inside a fixed-width box so the unit position is
+// always relative to the *number*, not the previous frame.
+static inline int textPxWidth(const char* s, uint8_t size) {
+  return (int)strlen(s) * 6 * size;
 }
 
 void St7789Ui::pushPowerHistory(float p) {
@@ -263,12 +293,12 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
   ledcWrite(PIN_BL, BL_DUTY);
 
   uint32_t now = millis();
-  bool periodic = (now - _lastFullRedrawMs) > 5000;
-  if (periodic) {
+  // Periodic chrome refresh every 30 s — paints over the same pixels (no
+  // fillScreen!) so it's silent. The original 5 s + fillScreen flow caused
+  // the visible flicker the user reported.
+  bool chromeRefresh = (now - _lastFullRedrawMs) > 30000;
+  if (chromeRefresh) {
     _lastFullRedrawMs = now;
-    _lastPower = -9999.0f;
-    _lastRpm = -1.0f;
-    _lastAvgInt = _lastMaxInt = -2;
     drawStaticChrome();
   }
 
@@ -280,40 +310,61 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
   }
   pushPowerHistory(s.power_w);
 
-  // POWER number (right-justified inside its box)
-  if (fabsf(s.power_w - _lastPower) >= 0.5f || periodic) {
+  const int box_x = 8;
+  const int box_w = PANEL_W - 16;
+
+  // POWER number — left-aligned, with small "w" unit baseline-aligned to its
+  // right (matches the Cinder ride spec).
+  if (fabsf(s.power_w - _lastPower) >= 0.5f || chromeRefresh) {
     _lastPower = s.power_w;
     int p = (int)lroundf(s.power_w);
     if (p < 0) p = 0;
     char buf[8];
     snprintf(buf, sizeof(buf), "%d", p);
+    // Clear box & paint left
+    _gfx->fillRect(box_x, POW_NUM_Y, box_w, POW_NUM_H, COL_BG);
     _gfx->setTextColor(COL_INK, COL_BG);
-    drawNumber(/*x=*/8, /*y=*/POW_NUM_Y, /*w=*/PANEL_W - 16, /*h=*/POW_NUM_H,
-               /*size=*/7, buf);
+    _gfx->setCursor(box_x, POW_NUM_Y);
+    _gfx->setTextSize(7);
+    _gfx->print(buf);
+    // "w" unit: size 2, baseline ≈ POW_NUM_Y + (size-2)*8 from top
+    int numW = textPxWidth(buf, 7);
+    int unitX = box_x + numW + 4;
+    int unitY = POW_NUM_Y + POW_NUM_H - 16; // baseline of the big number
+    _gfx->setTextColor(COL_DIM, COL_BG);
+    _gfx->setTextSize(2);
+    _gfx->setCursor(unitX, unitY);
+    _gfx->print("w");
 
-    // 3s sub-line on the right of the POWER label row (here we just show the
-    // current value — proper 3s smoothing would require an extra buffer).
+    // 3s sub-line on the right of the POWER label row — only the value itself
+    // is amber (matches "3s · 247" with 247 in accent in the design).
     char sub[16];
-    snprintf(sub, sizeof(sub), "3s %d", p);
-    int subW = (int)strlen(sub) * 6;
-    int subX = PANEL_W - subW - 8;
-    _gfx->fillRect(subX - 2, 8, subW + 4, 8, COL_BG);
-    _gfx->setTextColor(COL_ACCENT, COL_BG);
+    snprintf(sub, sizeof(sub), "%d", p);
+    int subValW = textPxWidth(sub, 1);
+    int subX = PANEL_W - subValW - 8;
+    _gfx->fillRect(80, POW_LABEL_Y, PANEL_W - 80 - 4, 8, COL_BG);
     _gfx->setTextSize(1);
-    _gfx->setCursor(subX, 8);
+    _gfx->setTextColor(COL_DIM, COL_BG);
+    _gfx->setCursor(subX - 24, POW_LABEL_Y);
+    _gfx->print("3s ");
+    _gfx->setTextColor(COL_ACCENT, COL_BG);
+    _gfx->setCursor(subX, POW_LABEL_Y);
     _gfx->print(sub);
   }
 
-  // CADENCE number
-  if (fabsf(s.rpm - _lastRpm) >= 0.5f || periodic) {
+  // CADENCE number — same left-aligned style. No unit text (the "RPM" label
+  // sits in the top-right of the section header).
+  if (fabsf(s.rpm - _lastRpm) >= 0.5f || chromeRefresh) {
     _lastRpm = s.rpm;
     int r = (int)lroundf(s.rpm);
     if (r < 0) r = 0;
     char buf[8];
     snprintf(buf, sizeof(buf), "%d", r);
+    _gfx->fillRect(box_x, CAD_NUM_Y, box_w, CAD_NUM_H, COL_BG);
     _gfx->setTextColor(COL_INK, COL_BG);
-    drawNumber(/*x=*/8, /*y=*/CAD_NUM_Y, /*w=*/PANEL_W - 16, /*h=*/CAD_NUM_H,
-               /*size=*/7, buf);
+    _gfx->setCursor(box_x, CAD_NUM_Y);
+    _gfx->setTextSize(7);
+    _gfx->print(buf);
 
     // Cadence target marker — clear the band, redraw it, then the marker.
     drawCadenceTargetBand();
@@ -325,7 +376,7 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
     }
   }
 
-  // Tick bar + AVG/MAX update on every tick (cheap, only redraws as needed).
+  // Tick bar + AVG/MAX update on every tick.
   drawTickBar();
   drawAvgMaxLine();
 }
@@ -354,4 +405,91 @@ void St7789Ui::setStatus(const char* text) {
   strncpy(_status, text, sizeof(_status) - 1);
   _status[sizeof(_status) - 1] = '\0';
   drawStatusBar();
+}
+
+// ─── Cinder boot splash ──────────────────────────────────────────────────────
+// Mirrors the Boot variation from the design: top tick rule, amber rotor
+// circle with "kp" inside, MONARK / ESP32·CYCLE COMPUTER lockup, BOOT progress
+// bar in amber, init-line console below, version footer.
+void St7789Ui::showBoot(uint8_t progress, const char* line1,
+                        const char* line2, const char* line3) {
+  if (!_ready) return;
+  _gfx->setTextWrap(false);
+  _gfx->fillScreen(COL_BG);
+
+  // Top tick rule
+  for (int i = 0; i < 30; i++) {
+    int x = 6 + (i * (PANEL_W - 12)) / 29;
+    int h = (i % 5 == 0) ? 6 : 3;
+    uint16_t c = (i % 5 == 0) ? COL_DIM : COL_RULE;
+    _gfx->drawFastVLine(x, 14 - h, h, c);
+  }
+  _gfx->drawFastHLine(0, 14, PANEL_W, COL_RULE);
+
+  // Rotor logo: amber outer ring + dim inner ring + tick at top + "kp"
+  const int cx = PANEL_W / 2;
+  const int cy = 96;
+  const int r1 = 32;
+  const int r2 = 24;
+  _gfx->drawCircle(cx, cy, r1, COL_ACCENT);
+  _gfx->drawCircle(cx, cy, r1 - 1, COL_ACCENT); // 2-px stroke
+  _gfx->drawCircle(cx, cy, r2, COL_DIM);
+  _gfx->fillRect(cx, cy - r1 - 2, 1, 6, COL_ACCENT);
+  // "kp" centered (size 3 ≈ 18×24 → fits inside r2)
+  _gfx->setTextColor(COL_INK, COL_BG);
+  _gfx->setTextSize(3);
+  _gfx->setCursor(cx - 18, cy - 11);
+  _gfx->print("kp");
+
+  // MONARK wordmark (size 2, letter-spaced via spaces — closest we can get
+  // without a real font). Centred.
+  const char* word = "MONARK";
+  int wW = (int)strlen(word) * 6 * 2;
+  _gfx->setTextColor(COL_INK, COL_BG);
+  _gfx->setTextSize(2);
+  _gfx->setCursor((PANEL_W - wW) / 2, 150);
+  _gfx->print(word);
+
+  // ESP32 · CYCLE COMPUTER tagline
+  const char* tag = "ESP32 CYCLE COMPUTER";
+  int tW = (int)strlen(tag) * 6;
+  _gfx->setTextColor(COL_DIM, COL_BG);
+  _gfx->setTextSize(1);
+  _gfx->setCursor((PANEL_W - tW) / 2, 174);
+  _gfx->print(tag);
+
+  // BOOT label + progress %
+  _gfx->setTextColor(COL_DIM, COL_BG);
+  _gfx->setTextSize(1);
+  _gfx->setCursor(8, 200);
+  _gfx->print("BOOT");
+  char pct[8]; snprintf(pct, sizeof(pct), "%u%%", progress);
+  int pctW = (int)strlen(pct) * 6;
+  _gfx->setTextColor(COL_ACCENT, COL_BG);
+  _gfx->setCursor(PANEL_W - 8 - pctW, 200);
+  _gfx->print(pct);
+
+  // Progress bar
+  _gfx->fillRect(8, 212, PANEL_W - 16, 4, COL_RULE);
+  int fillW = ((PANEL_W - 16) * progress) / 100;
+  if (fillW > 0) _gfx->fillRect(8, 212, fillW, 4, COL_ACCENT);
+
+  // Init lines
+  int y = 228;
+  _gfx->setTextColor(COL_DIM, COL_BG);
+  _gfx->setTextSize(1);
+  if (line1) { _gfx->setCursor(8, y); _gfx->print(line1); y += 12; }
+  if (line2) { _gfx->setCursor(8, y); _gfx->print(line2); y += 12; }
+  if (line3) { _gfx->setCursor(8, y); _gfx->print(line3); y += 12; }
+
+  // Footer: version left, fw status right
+  _gfx->drawFastHLine(0, PANEL_H - 22, PANEL_W, COL_RULE);
+  _gfx->setTextColor(COL_DIM, COL_BG);
+  _gfx->setTextSize(1);
+  _gfx->setCursor(8, PANEL_H - 14);
+  _gfx->print("v0.4");
+  const char* rh = "fw  ready";
+  int rhW = (int)strlen(rh) * 6;
+  _gfx->setCursor(PANEL_W - rhW - 8, PANEL_H - 14);
+  _gfx->print(rh);
 }

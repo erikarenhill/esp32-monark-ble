@@ -29,6 +29,13 @@ public:
     // Small persistent status line (e.g. WiFi IP). Default: noop.
     virtual void setStatus(const char* /*text*/) {}
 
+    // Cinder-style boot splash. Default: noop. Concrete impls render a
+    // themed splash with a progress percentage and up to three init lines.
+    virtual void showBoot(uint8_t /*progress*/,
+                          const char* /*line1*/ = nullptr,
+                          const char* /*line2*/ = nullptr,
+                          const char* /*line3*/ = nullptr) {}
+
     // Interaction
     virtual void update() {}
     virtual bool isActionRequested() { return false; }

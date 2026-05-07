@@ -88,7 +88,7 @@ void setup() {
 #endif
   if (display) {
     display->begin();
-    display->showMessage("Monark", "Starting...");
+    display->showBoot(10, "> display.init  ok");
     Serial.println("Display OK");
   } else {
     Serial.println("Display OK (null)");
@@ -109,6 +109,9 @@ void setup() {
   Serial.printf("Cal: %d %d %d %d\n", a0, a2, a4, a6);
 
   calibration = new MonarkCalibration(a0, a2, a4, a6);
+  if (display) display->showBoot(35, "> display.init  ok",
+                                     loaded ? "> calib.load    ok"
+                                            : "> calib.load    default");
 
   // Live-tuning session: force NVS to match the source default each boot so
   // we know exactly what cycle_constant is in effect. Remove this overwrite
@@ -154,6 +157,9 @@ void setup() {
   ble.begin(deviceName.c_str());
   Serial.println("BLE OK");
   Serial.flush();
+  if (display) display->showBoot(70, "> display.init  ok",
+                                     "> calib.load    ok",
+                                     "> ble.advertise ok");
 
   // Web server for power data and calibration (uses device name for WiFi AP)
   Serial.println("Starting WiFi...");
@@ -172,6 +178,15 @@ void setup() {
              webServer->getIPAddress().c_str());
     display->setStatus(status);
     Serial.printf("UI at http://%s/\n", webServer->getIPAddress().c_str());
+
+    // Final boot frame at 100% — held for ~1.2 s before the ride view paints.
+    char wifiLine[40];
+    snprintf(wifiLine, sizeof(wifiLine), "> wifi.ui      %s",
+             webServer->isAPMode() ? "ap" : "sta");
+    display->showBoot(100, "> ble.advertise ok",
+                           wifiLine,
+                           "> ride         ready");
+    delay(1200);
   }
 
   Serial.println("System started (LCD + BLE + WiFi).");

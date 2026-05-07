@@ -23,6 +23,11 @@ public:
   void showMessage(const char* line1, const char* line2) override;
   void setStatus(const char* text) override;
 
+  // Cinder-style boot splash. Held by the caller (delay) so it stays visible
+  // for a couple of seconds before showPower paints over it. `progress` is 0–100.
+  void showBoot(uint8_t progress, const char* line1 = nullptr,
+                const char* line2 = nullptr, const char* line3 = nullptr) override;
+
 private:
   Arduino_DataBus* _bus = nullptr;
   Arduino_GFX* _gfx = nullptr;
