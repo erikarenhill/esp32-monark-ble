@@ -12,18 +12,21 @@ void PowerWebServer::begin(const char* apPassword) {
     _deviceName = _settings->loadDeviceName("MonarkPower");
     _apPassword = apPassword;
 
-    // ADC reads now come from PowerReal's already-smoothed _lastSample.adc_raw,
-    // not a duplicate poller on the AsyncTCP request thread.
-
-    // Try to connect to saved WiFi first
-    if (!tryConnectWiFi()) {
-        // Fall back to AP mode
-        startAPMode();
-    }
-
+    // Always come up in AP mode FIRST so the web UI is reachable within a
+    // second of boot — STA association is finicky on the C6 (often takes
+    // 30-60 s of repeated auth handshakes, sometimes never succeeds on the
+    // first try). The poll() loop will attempt STA in the background a few
+    // seconds later, once the radio + BLE stack have settled. On success
+    // poll() promotes us to AP+STA so existing AP clients aren't dropped.
+    startAPMode();
     setupRoutes();
     _server.begin();
     Serial.println("Web server started on port 80");
+
+    // Schedule the first STA retry ~5 s out — gives the radio time to settle
+    // after AP-up + BLE-up, when the C6 has been observed to associate more
+    // reliably than during a busy boot.
+    _lastStaRetryMs = millis() - STA_RETRY_INTERVAL_MS + 5000;
 }
 
 bool PowerWebServer::tryConnectWiFi() {
@@ -44,6 +47,11 @@ bool PowerWebServer::tryConnectWiFi() {
     Serial.printf("Connecting to WiFi: %s (pass %d chars: %s)\n",
                   ssid.c_str(), password.length(), passPreview.c_str());
     WiFi.persistent(false);
+    // Don't let the WiFi stack auto-retry on AUTH_FAIL. The C6 retries every
+    // ~500ms with the same wrong (or temporarily-rejected) creds, hammering
+    // the AP and triggering its rate-limit / blacklist for our MAC. We do
+    // exactly one deliberate attempt, wait, give up if it doesn't take.
+    WiFi.setAutoReconnect(false);
     WiFi.mode(WIFI_STA);
     delay(100);
     // Disconnect AFTER mode is set so it's not a "STA not started" error at fresh boot.
@@ -106,9 +114,11 @@ bool PowerWebServer::tryConnectWiFi() {
     esp_wifi_set_config(WIFI_IF_STA, &wcfg);
     esp_wifi_connect();
 
-    // Wait up to 25 seconds for connection (some routers + WPA3-mixed are slow to associate).
+    // Wait up to 60 seconds for connection — the C6 + WPA3-mixed combo can
+    // take 30-45 s on a "cold" first try while the AP and the chip negotiate
+    // capabilities. 60 s gives margin without making boot feel hung.
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 50) {
+    while (WiFi.status() != WL_CONNECTED && attempts < 120) {
         delay(500);
         Serial.print(".");
         attempts++;
@@ -184,6 +194,45 @@ bool PowerWebServer::isConnected() const {
         return WiFi.softAPgetStationNum() > 0;
     }
     return WiFi.status() == WL_CONNECTED;
+}
+
+void PowerWebServer::poll() {
+    // Background STA retry while stuck in AP. Cheap — bails fast unless the
+    // timer has elapsed or the user manually requested a retry.
+    if (!_isAPMode) return;
+    uint32_t now = millis();
+    bool due = _forceStaRetry || (_lastStaRetryMs != 0 && (now - _lastStaRetryMs >= STA_RETRY_INTERVAL_MS));
+    if (_lastStaRetryMs == 0) _lastStaRetryMs = now; // first call after boot baselines the timer
+    if (!due) return;
+    _forceStaRetry = false;
+    _lastStaRetryMs = now;
+    retryStaIfNeeded();
+}
+
+void PowerWebServer::retryStaIfNeeded() {
+    String ssid, password;
+    if (!_settings->loadWiFi(ssid, password)) return;
+    if (ssid.length() == 0) return;
+
+    Serial.println("[wifi-retry] attempting STA reconnect from AP mode");
+    // Stay in AP+STA mode so AP clients (phone on MonarkPower) don't get
+    // dropped while STA negotiates. tryConnectWiFi() will set WIFI_STA mode
+    // internally — we override after it returns.
+    WiFi.mode(WIFI_AP_STA);
+    bool ok = tryConnectWiFi();
+    if (ok) {
+        // Keep both AP+STA up so existing AP clients survive.
+        WiFi.mode(WIFI_AP_STA);
+        _isAPMode = false; // STA is our preferred address now
+        Serial.println("[wifi-retry] STA up — running AP+STA");
+    } else {
+        // tryConnectWiFi switched to WIFI_STA on entry; restore AP-only since
+        // STA couldn't associate. Without this, AP would stay down.
+        Serial.println("[wifi-retry] STA still failing — restoring AP");
+        WiFi.disconnect(true /*wifioff*/, false);
+        delay(50);
+        startAPMode();
+    }
 }
 
 void PowerWebServer::updatePowerData(const PowerSample& sample) {
@@ -273,6 +322,13 @@ void PowerWebServer::setupRoutes() {
         String json;
         serializeJson(doc, json);
         request->send(200, "application/json", json);
+    });
+
+    // POST /api/wifi/reconnect — manual STA retry without rebooting. Returns
+    // immediately (the actual attempt blocks for up to 60s — fire and forget).
+    _server.on("/api/wifi/reconnect", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        request->send(200, "application/json", "{\"ok\":true,\"note\":\"STA retry kicked off — check /api/wifi in a minute\"}");
+        _forceStaRetry = true;
     });
 
     // POST /api/wifi/scan - force a fresh scan (deletes previous results).
@@ -509,6 +565,7 @@ button.btn:disabled{opacity:.5;cursor:wait}
   <div class="wifi-list" id="wifiList"></div>
   <div class="btn-row">
     <button class="btn" onclick="startScan()" id="scanBtn">Scan</button>
+    <button class="btn" onclick="reconnectSta()" id="reconnectBtn">Reconnect STA</button>
     <button class="btn primary" onclick="showWifiManual()">+ Add</button>
   </div>
   <div id="wifiManual" class="hidden">
@@ -757,6 +814,15 @@ async function saveWifi(){
   const res = await fetch('/api/wifi', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const d = await res.json();
   toast(d.success ? 'saved · reboot to apply' : (d.error||'error'), !d.success);
+}
+async function reconnectSta(){
+  const btn = document.getElementById('reconnectBtn');
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'Reconnecting…';
+  try {
+    await fetch('/api/wifi/reconnect', {method:'POST'});
+    toast('STA retry kicked off — wait ~60s and refresh');
+  } catch(e){ toast('error: '+e, true); }
+  setTimeout(()=>{ btn.disabled=false; btn.textContent=old; refreshWifi(); }, 5000);
 }
 async function clearWifi(){
   if(!confirm('Forget saved WiFi credentials?')) return;

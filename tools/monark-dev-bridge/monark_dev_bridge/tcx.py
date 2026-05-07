@@ -40,6 +40,39 @@ def read_samples(log_path: Path) -> list[dict]:
     return out
 
 
+def smooth_power(samples: list[dict], window_s: float = 3.0) -> list[dict]:
+    """Apply a centred rolling-mean over `window_s` seconds to the `power_w` field.
+
+    The Assioma pedals report instantaneous 1 Hz power which is jagged compared
+    to the ESP32 output (the firmware already rolls 3 s internally before sending
+    via BLE). When overlaying for visual comparison, applying the same window
+    on the reference side cancels the jitter that's *only* due to the difference
+    in smoothing strategy, not real measurement disagreement.
+
+    Returns a new list with the same shape; non-power fields are untouched.
+    """
+    if not samples or window_s <= 0:
+        return list(samples)
+    half = window_s / 2.0
+    src = sorted(samples, key=lambda s: s["ts"])
+    out: list[dict] = []
+    n = len(src)
+    lo = 0
+    hi = 0
+    for i, s in enumerate(src):
+        ts = s["ts"]
+        while lo < n and src[lo]["ts"] < ts - half:
+            lo += 1
+        while hi < n and src[hi]["ts"] <= ts + half:
+            hi += 1
+        vals = [src[j].get("power_w") for j in range(lo, hi) if src[j].get("power_w") is not None]
+        new = dict(s)
+        if vals:
+            new["power_w"] = sum(vals) / len(vals)
+        out.append(new)
+    return out
+
+
 def merge_power_with_hr(power_samples: list[dict], hr_samples: list[dict]) -> list[dict]:
     """For each power sample, attach the most recent hr_bpm <= ts (within 10s)."""
     if not power_samples:

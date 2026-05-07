@@ -14,6 +14,11 @@ public:
     void begin(const char* apPassword = "monark123");
     void updatePowerData(const PowerSample& sample);
 
+    // Periodic housekeeping. Call from the main loop. While in AP mode with
+    // saved STA credentials, this retries STA every few minutes so a flaky
+    // first-boot association eventually succeeds without a reboot.
+    void poll();
+
     String getIPAddress() const;
     String getDeviceName() const { return _deviceName; }
     bool isAPMode() const { return _isAPMode; }
@@ -39,6 +44,13 @@ private:
 
     bool tryConnectWiFi();
     void startAPMode();
+
+    // Background STA retry state — populated when we fall to AP at boot,
+    // checked from poll() to attempt STA again periodically.
+    uint32_t _lastStaRetryMs = 0;
+    bool _forceStaRetry = false;
+    static constexpr uint32_t STA_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL; // 5 min
+    void retryStaIfNeeded();
     void setupRoutes();
     void handleGetPower(AsyncWebServerRequest* request);
     void handleGetCalibration(AsyncWebServerRequest* request);

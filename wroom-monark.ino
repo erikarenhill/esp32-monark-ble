@@ -28,11 +28,12 @@
 #include "BoardConfig.h"
 
 // -------- CONFIG --------
-// Stock baseline. We're tuning live this session — see migration in setup()
-// that force-overwrites NVS each boot so we know exactly which value the
-// firmware is using. Remove the unconditional save once the right value is
-// locked in.
-static const float CYCLE_CONSTANT = 1.05f;
+// Tuned 2026-05-07 against a freshly-zeroed Assioma Favero pedal: with
+// cc=1.05 the ESP read +3-4% high at steady 130-170W and 220-260W bands,
+// so we drop to 1.00 to centre the median at zero. The migration in
+// setup() force-overwrites NVS each boot — remove the overwrite once
+// this value sticks.
+static const float CYCLE_CONSTANT = 1.00f;
 static const bool DEVELOPER_MODE = true; // If true, skip auto-calibration on missing settings
 
 
@@ -281,6 +282,10 @@ void loop() {
   if (calProcess) {
     calProcess->update();
   }
+
+  // Background WiFi STA retry from AP mode. Cheap — only does anything when
+  // the 5-minute interval elapses or a manual /api/wifi/reconnect is queued.
+  if (webServer) webServer->poll();
 
   power->update(now);
 

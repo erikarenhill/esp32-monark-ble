@@ -231,8 +231,13 @@ def build_app(cfg_path: Path) -> FastAPI:
         if which == "real":
             power = [s for s in all_samples if s.get("role") == "real_power"]
             hr = [s for s in all_samples if s.get("role") == "hr"]
+            # 5 s rolling mean on Assioma power so it visually matches the ESP32
+            # firmware's smoothed output. Without this, the Assioma trace is
+            # jagged next to the ESP32 trace purely from sample-rate / smoothing
+            # differences, not real disagreement.
+            power = tcxmod.smooth_power(power, window_s=5.0)
             merged = tcxmod.merge_power_with_hr(power, hr)
-            return tcxmod.build_tcx(merged, activity_name="Monark — real pedals + HR")
+            return tcxmod.build_tcx(merged, activity_name="Monark — real pedals + HR (5s smoothed)")
         if which == "esp32":
             esp = [s for s in all_samples if s.get("role") == "esp32"]
             return tcxmod.build_tcx(esp, activity_name="Monark — ESP32 firmware")
