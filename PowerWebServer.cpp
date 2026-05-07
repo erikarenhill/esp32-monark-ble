@@ -35,6 +35,14 @@ bool PowerWebServer::tryConnectWiFi() {
         Serial.println("No WiFi credentials saved");
         return false;
     }
+    // Defensive trim — the saved value might have been written before we
+    // started trimming on save. Stray whitespace causes silent reason=2.
+    ssid.trim();
+    password.trim();
+    if (ssid.length() == 0) {
+        Serial.println("WiFi credentials empty after trim");
+        return false;
+    }
 
     // Print first 3 + last 3 chars of password so the user can verify the saved
     // value matches what they typed/pasted, without leaking the full secret.
@@ -1103,6 +1111,9 @@ void PowerWebServer::handleSetWiFi(AsyncWebServerRequest* request, uint8_t* data
     }
 
     String ssid = doc["ssid"].as<String>();
+    // Trim leading / trailing whitespace — copy-paste from a password manager
+    // often sneaks in stray spaces that cause silent reason=2 (auth) failures.
+    ssid.trim();
     if (ssid.length() == 0 || ssid.length() > 32) {
         request->send(400, "application/json", "{\"success\":false,\"error\":\"SSID must be 1-32 characters\"}");
         return;
@@ -1115,6 +1126,9 @@ void PowerWebServer::handleSetWiFi(AsyncWebServerRequest* request, uint8_t* data
     bool passwordProvided = doc.containsKey("password");
     if (passwordProvided) {
         password = doc["password"].as<String>();
+        // Same whitespace-trim as SSID — protects against accidental
+        // leading/trailing spaces in pasted PSKs.
+        password.trim();
         if (password.length() > 63) {
             request->send(400, "application/json", "{\"success\":false,\"error\":\"Password too long\"}");
             return;
@@ -1128,6 +1142,19 @@ void PowerWebServer::handleSetWiFi(AsyncWebServerRequest* request, uint8_t* data
     Serial.printf("WiFi credentials saved: %s (pass %d chars, %s)\n",
                   ssid.c_str(), password.length(),
                   passwordProvided ? "provided" : "kept-existing");
+    // Hex dump of first 4 + last 4 bytes — lets us spot copy-paste artefacts
+    // (smart quotes, look-alike unicode, control chars) that look fine on
+    // screen but cause silent reason=2 auth failures.
+    if (passwordProvided && password.length() > 0) {
+        size_t n = password.length();
+        const char* p = password.c_str();
+        Serial.print("  password bytes:");
+        for (size_t i = 0; i < n; i++) {
+            if (i == 4 && n > 8) { Serial.print(" .."); i = n - 4; }
+            Serial.printf(" %02X", (uint8_t)p[i]);
+        }
+        Serial.println();
+    }
 
     request->send(200, "application/json", "{\"success\":true,\"message\":\"Restart to connect to WiFi\"}");
 }
