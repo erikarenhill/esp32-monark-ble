@@ -378,16 +378,13 @@ void PowerWebServer::setupRoutes() {
 <meta charset="utf-8">
 <title>monark · cycle computer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg:#0e0c0a; --surface:#171411; --surface2:#1f1b16;
   --ink:#f3ece0; --dim:#8a7f6e; --rule:#2a251e;
   --accent:#ff8a14; --accent2:#ffb84d; --ok:#a3c46a; --warn:#e85a3c;
-  --fd:"Inter Tight",ui-sans-serif,system-ui,sans-serif;
-  --fm:"JetBrains Mono",ui-monospace,monospace;
+  --fd:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;
+  --fm:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--fd);-webkit-font-smoothing:antialiased}
@@ -698,14 +695,15 @@ async function refreshWifi(){
     const res = await fetch('/api/wifi');
     const d = await res.json();
     const ip = d.ip || '';
-    const isAP = (d.mode||'').toLowerCase()==='ap';
-    document.getElementById('wifiCurrentLabel').textContent = isAP ? 'access point' : 'connected';
+    const isAP = !!d.isAPMode;
+    const connected = !!d.connected;
+    document.getElementById('wifiCurrentLabel').textContent = isAP ? 'access point' : (connected ? 'connected' : 'disconnected');
     document.getElementById('wifiCurrentIp').textContent = ip;
-    document.getElementById('wifiCurrentSsid').textContent = d.ssid || (isAP ? d.ap_ssid || 'monark-ap' : '—');
+    document.getElementById('wifiCurrentSsid').textContent = d.ssid || (isAP ? 'monark-ap' : '—');
     document.getElementById('wifiMode').textContent = isAP ? 'ap' : 'sta';
-    document.getElementById('wifiAux').textContent = d.rssi != null ? ('rssi '+d.rssi+' dBm') : '';
+    document.getElementById('wifiAux').textContent = d.configured ? 'sta saved' : 'no sta credentials';
     document.getElementById('ipAddr').textContent = ip || '—';
-  } catch(e) {}
+  } catch(e) { document.getElementById('wifiCurrentLabel').textContent = 'fetch error'; }
 }
 
 async function startScan(){

@@ -1,5 +1,6 @@
 #include "St7789Ui.h"
 #include <Arduino_GFX_Library.h>
+#include <U8g2lib.h>  // u8g2 font symbols (vector-feeling smooth glyphs)
 
 // Pins for the Waveshare ESP32-C6-LCD-1.47 (fixed by the board).
 static constexpr int8_t PIN_DC   = 15;
@@ -24,7 +25,9 @@ static constexpr int16_t COL_OFFSET = 34;
 // near-black background — without the colour inversion artefact.
 //   bg     #0e0c0a → 0x0000 (rendered as true black)
 //   panel  #181613 → 0x1882
-//   ink    #f3ece0 → 0xF77C (warm bone)
+//   ink    #f3ece0 → 0xDEB8 (warm bone, deliberately dimmed below pure white
+//                            so the big numbers read as cream, not "stadium-
+//                            scoreboard" 100% white)
 //   dim    #7a6f5e → 0x7B6B (warm grey)
 //   rule   #2a251e → 0x2923 (dark warm)
 //   accent #ff8a14 → 0xFC42 (amber primary)
@@ -33,7 +36,7 @@ static constexpr int16_t COL_OFFSET = 34;
 //   warn   #e85a3c → 0xEACB
 static constexpr uint16_t COL_BG     = 0x0000;
 static constexpr uint16_t COL_PANEL  = 0x1882;
-static constexpr uint16_t COL_INK    = 0xF77C;
+static constexpr uint16_t COL_INK    = 0xDEB8;
 static constexpr uint16_t COL_DIM    = 0x7B6B;
 static constexpr uint16_t COL_RULE   = 0x2923;
 static constexpr uint16_t COL_ACCENT = 0xFC42;
@@ -316,8 +319,9 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
   const int box_x = 8;
   const int box_w = PANEL_W - 16;
 
-  // POWER number — left-aligned, with small "w" unit baseline-aligned to its
-  // right (matches the Cinder ride spec).
+  // POWER number — left-aligned, vector-feel u8g2 font (logisoso50_tn = 50 px
+  // sans-serif numerics) for a smoother look than the bitmap default. Small
+  // dim "w" unit baseline-aligned beside it.
   if (fabsf(s.power_w - _lastPower) >= 0.5f || chromeRefresh) {
     _lastPower = s.power_w;
     int p = (int)lroundf(s.power_w);
@@ -327,16 +331,19 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
     // Clear box & paint left
     _gfx->fillRect(box_x, POW_NUM_Y, box_w, POW_NUM_H, COL_BG);
     _gfx->setTextColor(COL_INK, COL_BG);
-    _gfx->setCursor(box_x, POW_NUM_Y);
-    _gfx->setTextSize(7);
+    _gfx->setFont(u8g2_font_logisoso50_tn); // tall sans-serif digits, ~50px tall
+    int baseline = POW_NUM_Y + 48; // ascent ≈ 48, descent ≈ 0 for digits
+    _gfx->setCursor(box_x, baseline);
     _gfx->print(buf);
-    // "w" unit: size 2, baseline ≈ POW_NUM_Y + (size-2)*8 from top
-    int numW = textPxWidth(buf, 7);
-    int unitX = box_x + numW + 4;
-    int unitY = POW_NUM_Y + POW_NUM_H - 16; // baseline of the big number
+    // Estimate the rendered width so the unit lands right after the digits.
+    // u8g2_font_logisoso50_tn glyphs are ~28 px wide on average.
+    int numW = (int)strlen(buf) * 28;
+    int unitX = box_x + numW + 6;
+    // Restore default 5×7 bitmap font for the rest.
+    _gfx->setFont();
     _gfx->setTextColor(COL_DIM, COL_BG);
     _gfx->setTextSize(2);
-    _gfx->setCursor(unitX, unitY);
+    _gfx->setCursor(unitX, POW_NUM_Y + POW_NUM_H - 16);
     _gfx->print("w");
 
     // 3s sub-line on the right of the POWER label row — only the value itself
@@ -355,8 +362,7 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
     _gfx->print(sub);
   }
 
-  // CADENCE number — same left-aligned style. No unit text (the "RPM" label
-  // sits in the top-right of the section header).
+  // CADENCE number — same vector-feel u8g2 font as POWER for visual parity.
   if (fabsf(s.rpm - _lastRpm) >= 0.5f || chromeRefresh) {
     _lastRpm = s.rpm;
     int r = (int)lroundf(s.rpm);
@@ -365,9 +371,10 @@ void St7789Ui::showPower(const PowerSample& s, const WorkoutDisplay* /*workout*/
     snprintf(buf, sizeof(buf), "%d", r);
     _gfx->fillRect(box_x, CAD_NUM_Y, box_w, CAD_NUM_H, COL_BG);
     _gfx->setTextColor(COL_INK, COL_BG);
-    _gfx->setCursor(box_x, CAD_NUM_Y);
-    _gfx->setTextSize(7);
+    _gfx->setFont(u8g2_font_logisoso50_tn);
+    _gfx->setCursor(box_x, CAD_NUM_Y + 48);
     _gfx->print(buf);
+    _gfx->setFont(); // restore default font for downstream small text
 
     // Cadence target marker — clear the band, redraw it, then the marker.
     drawCadenceTargetBand();
