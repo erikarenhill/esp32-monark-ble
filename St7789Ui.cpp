@@ -70,12 +70,13 @@ void St7789Ui::begin() {
 
 void St7789Ui::drawStatusBar() {
   if (!_ready) return;
-  // 8-row band at the very top, redrawn from blank each time so a shorter
-  // string (e.g. "AP 192.168.4.1" → "10.0.0.5") doesn't leave trailing chars.
-  _gfx->fillRect(0, 0, PANEL_W, 10, COL_BG);
+  // ~16-row band at the very top, redrawn from blank each time so a shorter
+  // string doesn't leave trailing chars. Text size 2 (12×16 px glyphs) reads
+  // legibly from a couple of metres back.
+  _gfx->fillRect(0, 0, PANEL_W, 18, COL_BG);
   if (_status[0] == '\0') return;
   _gfx->setTextColor(COL_STATUS, COL_BG);
-  _gfx->setTextSize(1);
+  _gfx->setTextSize(2);
   _gfx->setCursor(4, 1);
   _gfx->print(_status);
 }
@@ -87,8 +88,8 @@ void St7789Ui::drawStaticChrome() {
 
   drawStatusBar();
 
-  // POWER label — pushed down 8px to make room for the status bar above.
-  _gfx->setCursor(8, 14);
+  // POWER label — pushed down to clear the size-2 status bar (top 18px).
+  _gfx->setCursor(8, 22);
   _gfx->setTextColor(COL_LABEL, COL_BG);
   _gfx->setTextSize(2);
   _gfx->print("POWER");
