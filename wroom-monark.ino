@@ -28,12 +28,10 @@
 #include "BoardConfig.h"
 
 // -------- CONFIG --------
-// Tuned 2026-05-07 against a freshly-zeroed Assioma Favero pedal: with
-// cc=1.05 the ESP read +3-4% high at steady 130-170W and 220-260W bands,
-// so we drop to 1.00 to centre the median at zero. The migration in
-// setup() force-overwrites NVS each boot — remove the overwrite once
-// this value sticks.
-static const float CYCLE_CONSTANT = 1.00f;
+// Default seed only — the live value lives in NVS and is editable from the
+// web UI (Settings → Cycle constant). loadCycleConstant() returns this when
+// no NVS entry exists yet.
+static const float CYCLE_CONSTANT = 1.05f;
 static const bool DEVELOPER_MODE = true; // If true, skip auto-calibration on missing settings
 
 
@@ -114,17 +112,10 @@ void setup() {
                                      loaded ? "> calib.load    ok"
                                             : "> calib.load    default");
 
-  // Live-tuning session: force NVS to match the source default each boot so
-  // we know exactly what cycle_constant is in effect. Remove this overwrite
-  // once we've locked in the tuned value.
+  // NVS-backed, web-UI editable. Falls back to CYCLE_CONSTANT (1.05) on a
+  // fresh device.
   float cycleConstant = settings.loadCycleConstant(CYCLE_CONSTANT);
-  if (fabsf(cycleConstant - CYCLE_CONSTANT) > 1e-4f) {
-    Serial.printf("Forcing cycle_constant %.3f → %.3f (matches source default)\n",
-                  cycleConstant, CYCLE_CONSTANT);
-    cycleConstant = CYCLE_CONSTANT;
-    settings.saveCycleConstant(cycleConstant);
-  }
-  Serial.printf("Cycle constant: %.3f\n", cycleConstant);
+  Serial.printf("Cycle constant: %.2f\n", cycleConstant);
 
   // Load simulator mode from settings (defaults to false)
   bool useSimulator = settings.loadSimulatorMode(false);
@@ -165,7 +156,7 @@ void setup() {
   // Web server for power data and calibration (uses device name for WiFi AP)
   Serial.println("Starting WiFi...");
   Serial.flush();
-  webServer = new PowerWebServer(&settings, calibration, ADC_PIN);
+  webServer = new PowerWebServer(&settings, calibration, power, ADC_PIN);
   webServer->begin();  // Uses device name from settings
   Serial.println("WiFi OK");
   Serial.flush();

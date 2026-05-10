@@ -9,7 +9,7 @@
 
 class PowerWebServer {
 public:
-    PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin);
+    PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, PowerSource* power, uint8_t adcPin);
 
     void begin(const char* apPassword = "monark123");
     void updatePowerData(const PowerSample& sample);
@@ -28,6 +28,7 @@ private:
     AsyncWebServer _server;
     SettingsManager* _settings;
     MonarkCalibration* _calibration;
+    PowerSource* _power;
     String _deviceName;
     String _apPassword;
     bool _isAPMode = true;
@@ -60,6 +61,10 @@ private:
     void handleGetWiFi(AsyncWebServerRequest* request);
     void handleSetWiFi(AsyncWebServerRequest* request, uint8_t* data, size_t len);
     void handleClearWiFi(AsyncWebServerRequest* request);
+
+    // Cycle constant (Monark calibration scalar) — independent of ADC quartet.
+    void handleGetCycleConstant(AsyncWebServerRequest* request);
+    void handleSetCycleConstant(AsyncWebServerRequest* request, uint8_t* data, size_t len);
 
     // Calibration wizard
     void handleCalibrationStatus(AsyncWebServerRequest* request);

@@ -3,8 +3,8 @@
 #include <esp_wifi.h>
 #include <ESPmDNS.h>
 
-PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin)
-    : _server(80), _settings(settings), _calibration(calibration), _adcPin(adcPin) {
+PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, PowerSource* power, uint8_t adcPin)
+    : _server(80), _settings(settings), _calibration(calibration), _power(power), _adcPin(adcPin) {
     memset(&_lastSample, 0, sizeof(_lastSample));
 }
 
@@ -405,6 +405,19 @@ void PowerWebServer::setupRoutes() {
         request->send(200, "application/json", json);
     });
 
+    // Cycle constant — read/write in isolation from the ADC quartet so the
+    // user can retune scaling without re-running the four-step wizard.
+    _server.on("/api/cycleConstant", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        handleGetCycleConstant(request);
+    });
+    _server.on("/api/cycleConstant", HTTP_POST,
+        [this](AsyncWebServerRequest* request) {},
+        nullptr,
+        [this](AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+            handleSetCycleConstant(request, data, len);
+        }
+    );
+
     // Calibration wizard endpoints
     _server.on("/api/calibrate/start", HTTP_POST, [this](AsyncWebServerRequest* request) {
         handleCalibrationStart(request);
@@ -603,11 +616,12 @@ button.btn:disabled{opacity:.5;cursor:wait}
     <div class="head"><span>Live load</span><span class="accent" id="calAdcRaw">—</span></div>
     <div class="big-num"><span id="calAdcLive">—</span><small>adc</small></div>
     <div class="adc-bar"><div class="fill" id="calAdcFill" style="width:0%"></div></div>
+    <div class="cal-text" style="margin:6px 14px 4px;font-size:11px" id="calDelta">—</div>
     <div class="foot-line">
-      <span>0kp <b id="cal0">—</b></span>
-      <span>2kp <b id="cal2">—</b></span>
-      <span>4kp <b id="cal4">—</b></span>
-      <span>6kp <b id="cal6">—</b></span>
+      <span>0kp <b id="cal0">—</b><small id="cal0d" style="color:var(--dim);margin-left:4px"></small></span>
+      <span>2kp <b id="cal2">—</b><small id="cal2d" style="color:var(--dim);margin-left:4px"></small></span>
+      <span>4kp <b id="cal4">—</b><small id="cal4d" style="color:var(--dim);margin-left:4px"></small></span>
+      <span>6kp <b id="cal6">—</b><small id="cal6d" style="color:var(--dim);margin-left:4px"></small></span>
     </div>
   </div>
   <div class="btn-row" id="calBtns">
@@ -626,9 +640,10 @@ button.btn:disabled{opacity:.5;cursor:wait}
   <input type="text" id="setDevName" maxlength="32">
   <div class="btn-row" style="margin-top:0"><button class="btn primary" onclick="saveDevName()">Save name</button></div>
 
-  <div class="row">
-    <div><div class="lbl">Cycle constant</div><div class="val" id="setCycCurrent">1.05</div></div>
-    <span class="arr">stored in nvs</span>
+  <label>Cycle constant <small style="color:var(--dim)">(0.50–2.00, 2 decimals)</small></label>
+  <div class="btn-row" style="margin-top:0;gap:8px">
+    <input type="number" id="setCycInput" step="0.01" min="0.50" max="2.00" style="flex:1">
+    <button class="btn primary" onclick="saveCyc()">Save</button>
   </div>
   <div class="row">
     <div><div class="lbl">Power simulator</div><div class="val" id="setSimVal">off</div></div>
@@ -841,16 +856,58 @@ async function clearWifi(){
 // ───── Calibration ─────
 const CAL_LABELS = ['ready','set 0kp','set 2kp','set 4kp','set 6kp','done'];
 const CAL_KP = [null, 0, 2, 4, 6];
+let calStep = 0;
+// Saved baseline (from NVS via /api/calibration). Refreshed lazily so the
+// chrome shows the current saved quartet even before the wizard runs.
+let savedCal = {adc0:null, adc2:null, adc4:null, adc6:null};
+let savedCalLoadedAt = 0;
+
+function fmtDelta(live, saved){
+  if(saved == null || saved <= 0) return '';
+  const d = live - saved;
+  const pct = (d / saved) * 100;
+  const sign = d >= 0 ? '+' : '';
+  return sign + d.toFixed(0) + ' (' + sign + pct.toFixed(1) + '%)';
+}
+
+async function loadSavedCal(force){
+  const now = Date.now();
+  if(!force && savedCalLoadedAt && (now - savedCalLoadedAt) < 4000) return;
+  try {
+    const c = await (await fetch('/api/calibration')).json();
+    savedCal = {adc0:c.adc0, adc2:c.adc2, adc4:c.adc4, adc6:c.adc6};
+    savedCalLoadedAt = now;
+  } catch(e){}
+}
 
 async function refreshCal(){
+  await loadSavedCal(false);
   const res = await fetch('/api/status');
   const d = await res.json();
   const step = d.cal && d.cal.step != null ? d.cal.step : 0;
+  // After a wizard save the server moves to step 5 (DONE) → reload saved.
+  if(step === 5) await loadSavedCal(true);
+  calStep = step;
   document.getElementById('calStepNum').textContent = step+'/4';
-  ['cal0','cal2','cal4','cal6'].forEach((id,i)=>{
-    const v = d.cal && d.cal.values ? d.cal.values['adc'+[0,2,4,6][i]] : 0;
-    document.getElementById(id).textContent = v||0;
+
+  // Footer: prefer in-progress captured value when wizard has it, otherwise
+  // fall back to saved baseline so the chrome is never blank.
+  const KPS = [0,2,4,6];
+  KPS.forEach((kp,i)=>{
+    const captured = d.cal && d.cal.values ? d.cal.values['adc'+kp] : 0;
+    const saved = savedCal['adc'+kp];
+    const v = (captured && captured > 0) ? captured : saved;
+    document.getElementById('cal'+kp).textContent = (v != null) ? v : '—';
+    const deltaEl = document.getElementById('cal'+kp+'d');
+    // Show delta only when we have BOTH a captured value and a prior saved
+    // baseline — i.e., during/after a recapture pass.
+    if(captured && captured > 0 && saved != null && saved > 0 && captured !== saved){
+      deltaEl.textContent = fmtDelta(captured, saved);
+    } else {
+      deltaEl.textContent = '';
+    }
   });
+
   // step indicator
   const segs = document.querySelectorAll('#calSteps .seg');
   segs.forEach((s,i)=>s.classList.toggle('on', i < step));
@@ -862,12 +919,26 @@ async function refreshCal(){
   const pct = Math.min(100, Math.max(0, (adc/1023)*100));
   document.getElementById('calAdcFill').style.width = pct.toFixed(1)+'%';
 
+  // Live delta vs saved baseline for the current step's target kp.
+  const calDelta = document.getElementById('calDelta');
+  if(step >= 1 && step <= 4){
+    const kp = CAL_KP[step];
+    const saved = savedCal['adc'+kp];
+    if(saved != null && saved > 0){
+      calDelta.innerHTML = 'live vs saved <b>'+kp+'kp</b> ('+saved+'): '+fmtDelta(adc, saved);
+    } else {
+      calDelta.textContent = 'no prior saved value for '+kp+'kp';
+    }
+  } else {
+    calDelta.textContent = '';
+  }
+
   const btnNext = document.getElementById('calNextBtn');
   const btnCancel = document.getElementById('calCancelBtn');
   if (step === 0) {
     btnNext.textContent = 'Start';
     btnCancel.disabled = true;
-    document.getElementById('calMsg').innerHTML = "Click <b>Start</b> to begin calibration. You'll set the pendulum to 0 → 2 → 4 → 6 kp in order.<small>The capture reads the live smoothed ADC. Hold the pendulum still; the chrome above shows current load.</small>";
+    document.getElementById('calMsg').innerHTML = "Click <b>Start</b> to begin calibration. You'll set the pendulum to 0 → 2 → 4 → 6 kp in order.<small>Saved baseline shown below — start to overwrite. The capture reads the live smoothed ADC.</small>";
   } else if (step >= 1 && step <= 4) {
     const kp = CAL_KP[step];
     btnNext.textContent = (step === 4 ? 'Save & Finish' : 'Capture & Next →');
@@ -880,7 +951,10 @@ async function refreshCal(){
   }
 }
 async function nextCal(){
-  const res = await fetch('/api/calibrate/next', {method:'POST'});
+  // step 0 = idle: must call /start first to enter the wizard, otherwise
+  // /next returns "Calibration not started".
+  const ep = (calStep === 0) ? '/api/calibrate/start' : '/api/calibrate/next';
+  const res = await fetch(ep, {method:'POST'});
   const d = await res.json();
   if(d.success === false) toast(d.error||'error', true);
   refreshCal();
@@ -898,8 +972,8 @@ async function refreshSettings(){
     document.getElementById('setDevName').value = dev.name || 'monark';
     document.getElementById('devShort').textContent = dev.name || 'monark';
     document.getElementById('dashName').textContent = (dev.name || 'monark').toLowerCase();
-    const cal = await (await fetch('/api/calibration')).json();
-    document.getElementById('setCycCurrent').textContent = (cal.cycleConstant!=null? cal.cycleConstant.toFixed(3) : '1.05');
+    const cyc = await (await fetch('/api/cycleConstant')).json();
+    document.getElementById('setCycInput').value = (cyc.cycleConstant!=null? cyc.cycleConstant.toFixed(2) : '1.05');
     const sim = await (await fetch('/api/simulator')).json();
     setSimUi(sim.enabled);
   } catch(e){}
@@ -914,6 +988,20 @@ async function toggleSim(){
   await fetch('/api/simulator', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: !cur})});
   setSimUi(!cur);
   toast('simulator '+(!cur?'on':'off')+' · reboot to apply');
+}
+async function saveCyc(){
+  const raw = document.getElementById('setCycInput').value;
+  const v = parseFloat(raw);
+  if(!(v >= 0.50 && v <= 2.00)){ toast('cycle constant must be 0.50–2.00', true); return; }
+  const rounded = Math.round(v*100)/100;
+  const res = await fetch('/api/cycleConstant', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({cycleConstant: rounded})});
+  const d = await res.json();
+  if(d.success){
+    document.getElementById('setCycInput').value = rounded.toFixed(2);
+    toast('cycle constant '+rounded.toFixed(2)+' · live');
+  } else {
+    toast(d.error||'error', true);
+  }
 }
 async function saveDevName(){
   const name = document.getElementById('setDevName').value.trim();
@@ -1163,6 +1251,32 @@ void PowerWebServer::handleClearWiFi(AsyncWebServerRequest* request) {
     _settings->clearWiFi();
     Serial.println("WiFi credentials cleared");
     request->send(200, "application/json", "{\"success\":true,\"message\":\"WiFi cleared. Restart to use AP mode\"}");
+}
+
+void PowerWebServer::handleGetCycleConstant(AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    doc["cycleConstant"] = _settings->loadCycleConstant(1.05f);
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
+}
+
+void PowerWebServer::handleSetCycleConstant(AsyncWebServerRequest* request, uint8_t* data, size_t len) {
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, data, len);
+    if (error) {
+        request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        return;
+    }
+    float cc = doc["cycleConstant"] | -1.0f;
+    if (cc < 0.5f || cc > 2.0f) {
+        request->send(400, "application/json", "{\"success\":false,\"error\":\"cycleConstant must be 0.50-2.00\"}");
+        return;
+    }
+    _settings->saveCycleConstant(cc);
+    if (_power) _power->setCycleConstant(cc);
+    Serial.printf("Cycle constant updated via web: %.2f (live)\n", cc);
+    request->send(200, "application/json", "{\"success\":true,\"cycleConstant\":" + String(cc, 2) + "}");
 }
 
 void PowerWebServer::handleCalibrationStatus(AsyncWebServerRequest* request) {

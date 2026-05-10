@@ -16,4 +16,9 @@ public:
 
   // Fetch latest sample
   virtual PowerSample getSample() = 0;
+
+  // Live-update the cycle constant (Monark cycle calibration scalar). Web UI
+  // pushes this on Save so the next sample reflects the new value without a
+  // reboot.
+  virtual void setCycleConstant(float cc) = 0;
 };
