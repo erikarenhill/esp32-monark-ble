@@ -139,12 +139,10 @@ void PowerReal::begin() {
   analogSetPinAttenuation(pin_adc, ADC_11db);  // Full range ~0-2.6V
   Serial.printf("ADC pin %d configured with 11dB attenuation\n", pin_adc);
 
-  // Pre-fill ADC buffer to avoid startup delay
-  for (uint8_t i = 0; i < ADC_BUF_SIZE; i++) {
-    adcBuffer[i] = readAdcRaw();
-  }
-  adcBufferCount = ADC_BUF_SIZE;
-  Serial.println("ADC buffer pre-filled");
+  // Seed EMA with a single read so the first BLE sample isn't 0.
+  adcEma = readAdcRaw();
+  adcEmaReady = true;
+  Serial.printf("ADC EMA seeded at %.0f\n", adcEma);
 }
 
 float PowerReal::readAdcRaw() {
@@ -176,27 +174,23 @@ float PowerReal::readAdcRaw() {
 }
 
 void PowerReal::sampleAdc(uint32_t now_ms) {
-  // Sample at 3Hz (every 333ms)
+  // 10Hz raw sampling, fed into an EMA. ALPHA=0.333 ≈ 5-sample equivalent
+  // (≈500 ms time constant) — half the lag of the old 10-sample ring buffer.
   if (now_ms - last_adc_sample_ms < ADC_SAMPLE_INTERVAL_MS) return;
   last_adc_sample_ms = now_ms;
 
-  // Read ADC and add to ring buffer
   float value = readAdcRaw();
-  adcBuffer[adcBufferHead] = value;
-  adcBufferHead = (adcBufferHead + 1) % ADC_BUF_SIZE;
-  if (adcBufferCount < ADC_BUF_SIZE) adcBufferCount++;
+  if (!adcEmaReady) {
+    adcEma = value;
+    adcEmaReady = true;
+  } else {
+    adcEma = ADC_EMA_ALPHA * value + (1.0f - ADC_EMA_ALPHA) * adcEma;
+  }
 }
 
 float PowerReal::getSmoothedAdc(uint32_t now_ms) {
-  (void)now_ms;  // Not needed anymore
-  if (adcBufferCount == 0) return 0.0f;
-
-  // Simple average of buffer (3 samples = 1 second)
-  float sum = 0.0f;
-  for (uint8_t i = 0; i < adcBufferCount; i++) {
-    sum += adcBuffer[i];
-  }
-  return sum / (float)adcBufferCount;
+  (void)now_ms;
+  return adcEmaReady ? adcEma : 0.0f;
 }
 
 float PowerReal::readKp(float& rawAdc, uint32_t now_ms) {
@@ -288,6 +282,16 @@ float PowerReal::calculateSmoothedRpm() {
 
   // Normal operation: quick to rise, slow to fall
   float instantRpm = rpm3s;  // Use responsive 3s window as base
+
+  // Outlier rejection: reject impossibly fast jumps (>1.5x previous) once
+  // we're in steady pedalling. Source TCX comparison showed isolated 156 rpm
+  // spikes from double-counted pulses — they'd otherwise smear into the BLE
+  // power output via power = brake * rpm * cc.
+  // Guard with lastSmoothedRpm > 30 so a real start-from-stop rampup
+  // (0 -> 80 rpm) isn't rejected.
+  if (lastSmoothedRpm > 30.0f && instantRpm > lastSmoothedRpm * 1.5f) {
+    return lastSmoothedRpm;  // hold the previous value for this cycle
+  }
 
   if (instantRpm >= lastSmoothedRpm) {
     // Increasing or stable: respond quickly

@@ -3,9 +3,12 @@
 #include "Calibration.h"
 #include <Arduino.h>
 
-// ADC sampling: 3Hz, report 1-second average (3 samples)
-static const uint8_t ADC_BUF_SIZE = 10;
-static const uint32_t ADC_SAMPLE_INTERVAL_MS = 100;  // 10Hz sampling
+// ADC sampling: 10Hz raw read, fed into an EMA whose time-constant is
+// equivalent to a ~5-sample moving average (≈500 ms window). Replaces the
+// old 10-sample (~1 s) ring buffer — drops the ESP-vs-pedal lag from ~2 s
+// down to ~1 s while keeping noise rejection adequate.
+static const uint32_t ADC_SAMPLE_INTERVAL_MS = 100;
+static const float ADC_EMA_ALPHA = 0.333f;  // 2/(N+1) with N=5
 
 class PowerReal : public PowerSource {
 public:
@@ -32,10 +35,9 @@ private:
   bool ready = false;
   PowerSample sample{};
 
-  // ADC ring buffer (3 samples for 1-second average)
-  float adcBuffer[ADC_BUF_SIZE] = {0};
-  uint8_t adcBufferHead = 0;
-  uint8_t adcBufferCount = 0;
+  // ADC EMA state (replaces ring buffer)
+  float adcEma = 0.0f;
+  bool adcEmaReady = false;
 
   // Cadence smoothing state
   float lastSmoothedRpm = 0.0f;
