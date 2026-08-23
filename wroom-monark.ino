@@ -128,7 +128,7 @@ void setup() {
   // Web server for power data and calibration (uses device name for WiFi AP)
   Serial.println("Starting WiFi...");
   Serial.flush();
-  webServer = new PowerWebServer(&settings, calibration, ADC_PIN);
+  webServer = new PowerWebServer(&settings, calibration, ADC_PIN, power);
   webServer->begin();  // Uses device name from settings
   Serial.println("WiFi OK");
   Serial.flush();

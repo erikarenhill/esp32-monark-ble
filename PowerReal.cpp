@@ -273,11 +273,10 @@ void PowerReal::update(uint32_t now_ms) {
   Snapshot s = snapshotState();
   sample.crank_revs = (uint16_t)s.total_revs;
   
-  // Convert last event time to 1/1024s units
-  // We need to handle the wrap-around of millis() if running for 49 days, 
-  // but for simple casting it might be okay. 
-  // BLE expects a free running timer.
-  sample.crank_evt_1024 = (uint16_t)((s.last_rev * 1024) / 1000);
+  // Convert last event time to 1/1024s units (BLE expects a free-running
+  // timer that wraps at 64s). 64-bit math needed: s.last_rev * 1024 overflows
+  // uint32 after ~70 minutes of uptime, which corrupts app-side cadence.
+  sample.crank_evt_1024 = (uint16_t)(((uint64_t)s.last_rev * 1024ULL) / 1000ULL);
 
   ready = true;
 }

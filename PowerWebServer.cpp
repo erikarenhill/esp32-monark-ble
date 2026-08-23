@@ -1,8 +1,8 @@
 #include "PowerWebServer.h"
 #include <Update.h>
 
-PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin)
-    : _server(80), _settings(settings), _calibration(calibration), _adcPin(adcPin) {
+PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin, PowerSource* power)
+    : _server(80), _settings(settings), _calibration(calibration), _power(power), _adcPin(adcPin) {
     memset(&_lastSample, 0, sizeof(_lastSample));
 }
 
@@ -323,9 +323,9 @@ void PowerWebServer::setupRoutes() {
                 <div class="label">kp</div>
             </div>
             <div class="col">
-                <div class="label">ADC Raw</div>
+                <div class="label">ADC</div>
                 <div class="value" id="adc" style="font-size:32px;">--</div>
-                <div class="label">&nbsp;</div>
+                <div class="label">mV</div>
             </div>
         </div>
     </div>
@@ -400,7 +400,7 @@ void PowerWebServer::setupRoutes() {
         </div>
         <button onclick="saveCalibration()">Save Calibration</button>
         <span id="calStatus" class="status"></span>
-        <p style="font-size:12px;color:#888;">Restart required for cycle constant change</p>
+        <p style="font-size:12px;color:#888;">Changes apply immediately, no restart needed</p>
     </div>
 
     <div class="card">
@@ -763,12 +763,13 @@ void PowerWebServer::handleSetCalibration(AsyncWebServerRequest* request, uint8_
     _settings->saveCalibration(adc0, adc2, adc4, adc6);
     _settings->saveCycleConstant(cycleConstant);
 
-    // Update live calibration
+    // Update live calibration and cycle constant
     _calibration->updateValues(adc0, adc2, adc4, adc6);
+    if (_power) _power->setCycleConstant(cycleConstant);
 
     Serial.printf("Calibration saved via web: %d %d %d %d, cycle=%.2f\n", adc0, adc2, adc4, adc6, cycleConstant);
 
-    request->send(200, "application/json", "{\"success\":true,\"message\":\"Restart for cycle constant to take effect\"}");
+    request->send(200, "application/json", "{\"success\":true,\"message\":\"Saved and applied\"}");
 }
 
 void PowerWebServer::handleGetDeviceName(AsyncWebServerRequest* request) {

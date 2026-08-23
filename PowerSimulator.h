@@ -9,6 +9,7 @@ public:
   void update(uint32_t now_ms) override;
   bool hasSample() const override;
   PowerSample getSample() override;
+  void setCycleConstant(float cc) override { cycle_constant = cc; }
 
 private:
   float cycle_constant;

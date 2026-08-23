@@ -16,4 +16,7 @@ public:
 
   // Fetch latest sample
   virtual PowerSample getSample() = 0;
+
+  // Update cycle constant at runtime (applied to subsequent samples)
+  virtual void setCycleConstant(float cc) = 0;
 };

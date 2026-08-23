@@ -9,7 +9,7 @@
 
 class PowerWebServer {
 public:
-    PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin);
+    PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin, PowerSource* power = nullptr);
 
     void begin(const char* apPassword = "monark123");
     void updatePowerData(const PowerSample& sample);
@@ -23,6 +23,7 @@ private:
     AsyncWebServer _server;
     SettingsManager* _settings;
     MonarkCalibration* _calibration;
+    PowerSource* _power;
     String _deviceName;
     String _apPassword;
     bool _isAPMode = true;
