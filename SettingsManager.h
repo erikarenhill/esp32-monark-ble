@@ -22,6 +22,10 @@ public:
     void saveCycleConstant(float value);
     float loadCycleConstant(float defaultValue = 1.05f);
 
+    // Zero offset (tare), in millivolts
+    void saveZeroOffset(float value);
+    float loadZeroOffset(float defaultValue = 0.0f);
+
     // WiFi configuration
     void saveWiFi(const char* ssid, const char* password);
     bool loadWiFi(String& ssid, String& password);

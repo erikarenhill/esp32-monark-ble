@@ -16,6 +16,7 @@ public:
   bool hasSample() const override;
   PowerSample getSample() override;
   void setCycleConstant(float cc) override { cycle_constant = cc; }
+  float getCurrentRpm() const override { return sample.rpm; }
 
   // Voltage divider conversion utilities (4.7k + 10k divider)
   static float millivoltsToRawAdc(float mv);   // mV at ADC pin -> raw ADC (0-4095)

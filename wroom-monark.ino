@@ -88,6 +88,11 @@ void setup() {
 
   calibration = new MonarkCalibration(a0, a2, a4, a6);
 
+  // Zero offset (tare) applied on top of the calibration curve
+  float zeroOffset = settings.loadZeroOffset(0.0f);
+  calibration->setZeroOffset(zeroOffset);
+  Serial.printf("Zero offset: %+.1f mV\n", zeroOffset);
+
   // Load cycle constant from settings
   float cycleConstant = settings.loadCycleConstant(CYCLE_CONSTANT);
   Serial.printf("Cycle constant: %.2f\n", cycleConstant);
@@ -105,7 +110,8 @@ void setup() {
   power->begin();
 
   // Init calibration process (available in both modes)
-  calProcess = new CalibrationProcess(CAL_BUTTON_PIN, ADC_PIN, display, &settings, calibration);
+  calProcess = new CalibrationProcess(CAL_BUTTON_PIN, ADC_PIN, display, &settings, calibration,
+                                      TARE_BUTTON_PIN, STATUS_LED_PIN, power);
   calProcess->begin();
 
   if (!loaded && !DEVELOPER_MODE && !useSimulator) {
@@ -128,7 +134,7 @@ void setup() {
   // Web server for power data and calibration (uses device name for WiFi AP)
   Serial.println("Starting WiFi...");
   Serial.flush();
-  webServer = new PowerWebServer(&settings, calibration, ADC_PIN, power);
+  webServer = new PowerWebServer(&settings, calibration, ADC_PIN, power, calProcess);
   webServer->begin();  // Uses device name from settings
   Serial.println("WiFi OK");
   Serial.flush();

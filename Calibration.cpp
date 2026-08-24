@@ -10,6 +10,10 @@ float MonarkCalibration::lerp(float x, float x0, float y0, float x1, float y1) {
 }
 
 float MonarkCalibration::adcToKp(float adc) {
+    // Apply zero offset (tare) before interpolating. Shifts the whole
+    // curve, leaving the span between calibration points untouched.
+    adc -= _zeroOffset;
+
     // Below 0kp calibration point - clamp to 0
     if (adc <= (float)_adc0) return 0.0f;
 

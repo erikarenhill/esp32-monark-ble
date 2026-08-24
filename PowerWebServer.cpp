@@ -1,8 +1,9 @@
 #include "PowerWebServer.h"
 #include <Update.h>
 
-PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin, PowerSource* power)
-    : _server(80), _settings(settings), _calibration(calibration), _power(power), _adcPin(adcPin) {
+PowerWebServer::PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin, PowerSource* power, CalibrationProcess* calProcess)
+    : _server(80), _settings(settings), _calibration(calibration), _power(power),
+      _calProcess(calProcess), _adcPin(adcPin) {
     memset(&_lastSample, 0, sizeof(_lastSample));
 }
 
@@ -195,6 +196,14 @@ void PowerWebServer::setupRoutes() {
         handleClearWiFi(request);
     });
 
+    // Zero / tare endpoints
+    _server.on("/api/tare", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        handleTare(request);
+    });
+    _server.on("/api/tare/reset", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        handleTareReset(request);
+    });
+
     // Reboot endpoint
     _server.on("/api/reboot", HTTP_POST, [this](AsyncWebServerRequest* request) {
         request->send(200, "application/json", "{\"success\":true,\"message\":\"Rebooting...\"}");
@@ -237,6 +246,7 @@ void PowerWebServer::setupRoutes() {
         doc["rpm"] = _lastSample.rpm;
         doc["kp"] = _lastSample.kp;
         doc["adc"] = _lastSample.adc_raw;
+        doc["zeroOffset"] = _calibration->getZeroOffset();
 
         // Calibration state
         const char* calStates[] = {"idle", "0kp", "6kp", "4kp", "2kp", "done"};
@@ -328,6 +338,22 @@ void PowerWebServer::setupRoutes() {
                 <div class="label">mV</div>
             </div>
         </div>
+    </div>
+
+    <div class="card">
+        <h2>Zero / Tare</h2>
+        <p style="font-size:13px;color:#aaa;margin-top:0;">
+            Bike at rest, brake at its lowest setting. Zeroing removes drift in the
+            resistance reading without touching the calibration span. Do this before each ride.
+        </p>
+        <div style="margin-bottom:15px;">
+            <span style="color:#888;">Current zero offset: </span>
+            <span id="zeroOffset" style="font-size:22px;color:#4ecca3;">--</span>
+            <span style="color:#888;"> mV</span>
+        </div>
+        <button onclick="doTare()">Zero Now</button>
+        <button onclick="resetTare()" style="background:#e94560;margin-left:10px;">Clear Offset</button>
+        <span id="tareStatus" class="status"></span>
     </div>
 
     <div class="card">
@@ -436,6 +462,10 @@ void PowerWebServer::setupRoutes() {
                 document.getElementById('rpm').textContent = Math.round(data.rpm);
                 document.getElementById('kp').textContent = data.kp.toFixed(2);
                 document.getElementById('adc').textContent = data.adc.toFixed(2);
+                if (data.zeroOffset !== undefined) {
+                    document.getElementById('zeroOffset').textContent =
+                        (data.zeroOffset >= 0 ? '+' : '') + data.zeroOffset.toFixed(1);
+                }
 
                 // Calibration wizard
                 updateCalibrationUI(data.cal);
@@ -521,6 +551,43 @@ void PowerWebServer::setupRoutes() {
                 });
                 const result = await res.json();
                 status.textContent = result.success ? 'Saved! Restart required.' : (result.error || 'Error');
+                status.className = 'status ' + (result.success ? 'success' : 'error');
+                setTimeout(function() { status.textContent = ""; }, 3000);
+            } catch (e) {
+                status.textContent = 'Network error';
+                status.className = 'status error';
+            }
+        }
+
+        async function doTare() {
+            const status = document.getElementById('tareStatus');
+            status.textContent = 'Zeroing...';
+            status.className = 'status';
+            try {
+                const res = await fetch('/api/tare', { method: 'POST' });
+                const result = await res.json();
+                if (result.success) {
+                    status.textContent = 'Zeroed (' + (result.offsetKp >= 0 ? '+' : '') +
+                                         result.offsetKp.toFixed(2) + ' kp)';
+                    status.className = 'status success';
+                } else {
+                    status.textContent = result.error || 'Failed';
+                    status.className = 'status error';
+                }
+                setTimeout(function() { status.textContent = ""; }, 4000);
+            } catch (e) {
+                status.textContent = 'Network error';
+                status.className = 'status error';
+            }
+        }
+
+        async function resetTare() {
+            if (!confirm('Clear the zero offset?')) return;
+            const status = document.getElementById('tareStatus');
+            try {
+                const res = await fetch('/api/tare/reset', { method: 'POST' });
+                const result = await res.json();
+                status.textContent = result.success ? 'Offset cleared' : 'Error';
                 status.className = 'status ' + (result.success ? 'success' : 'error');
                 setTimeout(function() { status.textContent = ""; }, 3000);
             } catch (e) {
@@ -728,6 +795,7 @@ void PowerWebServer::handleGetCalibration(AsyncWebServerRequest* request) {
     doc["adc4"] = _calibration->getAdc4();
     doc["adc6"] = _calibration->getAdc6();
     doc["cycleConstant"] = _settings->loadCycleConstant(1.05f);
+    doc["zeroOffset"] = _calibration->getZeroOffset();
 
     String json;
     serializeJson(doc, json);
@@ -949,6 +1017,10 @@ void PowerWebServer::handleCalibrationNext(AsyncWebServerRequest* request) {
             _settings->saveCalibration(_calValues[0], _calValues[1], _calValues[2], _calValues[3]);
             _calibration->updateValues(_calValues[0], _calValues[1], _calValues[2], _calValues[3]);
 
+            // A fresh 4-point calibration supersedes any tare offset
+            _settings->saveZeroOffset(0.0f);
+            _calibration->setZeroOffset(0.0f);
+
             Serial.printf("Calibration saved: 0kp=%d 2kp=%d 4kp=%d 6kp=%d\n", _calValues[0], _calValues[1], _calValues[2], _calValues[3]);
             _calState = CAL_DONE;
             Serial.printf("Moving to state %d (CAL_DONE)\n", (int)_calState);
@@ -970,6 +1042,41 @@ void PowerWebServer::handleCalibrationCancel(AsyncWebServerRequest* request) {
     _calState = CAL_IDLE;
     Serial.println("Web calibration cancelled");
     request->send(200, "application/json", "{\"success\":true,\"message\":\"Calibration cancelled\"}");
+}
+
+void PowerWebServer::handleTare(AsyncWebServerRequest* request) {
+    if (!_calProcess) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Tare unavailable\"}");
+        return;
+    }
+    TareResult r = _calProcess->performTare();
+    float offset = _calibration->getZeroOffset();
+    float perKp = (float)(_calibration->getAdc2() - _calibration->getAdc0()) / 2.0f;
+
+    JsonDocument doc;
+    doc["success"] = (r == TareResult::Ok);
+    doc["offset"] = offset;
+    doc["offsetKp"] = perKp > 0.0f ? offset / perKp : 0.0f;
+    if (r == TareResult::Ok) {
+        doc["message"] = "Zeroed";
+    } else if (r == TareResult::Rejected) {
+        doc["error"] = "Too far off - is the brake at its lowest setting?";
+    } else if (r == TareResult::Moving) {
+        doc["error"] = "Stop pedalling first, then zero";
+    } else {
+        doc["error"] = "Run a full calibration first";
+    }
+
+    String json;
+    serializeJson(doc, json);
+    request->send(r == TareResult::Ok ? 200 : 400, "application/json", json);
+}
+
+void PowerWebServer::handleTareReset(AsyncWebServerRequest* request) {
+    _calibration->setZeroOffset(0.0f);
+    _settings->saveZeroOffset(0.0f);
+    Serial.println("Zero offset cleared via web");
+    request->send(200, "application/json", "{\"success\":true,\"message\":\"Zero offset cleared\",\"offset\":0}");
 }
 
 void PowerWebServer::handleUpdate(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final) {

@@ -6,10 +6,12 @@
 #include "PowerSource.h"
 #include "SettingsManager.h"
 #include "Calibration.h"
+#include "CalibrationProcess.h"
 
 class PowerWebServer {
 public:
-    PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin, PowerSource* power = nullptr);
+    PowerWebServer(SettingsManager* settings, MonarkCalibration* calibration, uint8_t adcPin, PowerSource* power = nullptr,
+                   CalibrationProcess* calProcess = nullptr);
 
     void begin(const char* apPassword = "monark123");
     void updatePowerData(const PowerSample& sample);
@@ -24,6 +26,7 @@ private:
     SettingsManager* _settings;
     MonarkCalibration* _calibration;
     PowerSource* _power;
+    CalibrationProcess* _calProcess;
     String _deviceName;
     String _apPassword;
     bool _isAPMode = true;
@@ -58,6 +61,8 @@ private:
     void handleGetWiFi(AsyncWebServerRequest* request);
     void handleSetWiFi(AsyncWebServerRequest* request, uint8_t* data, size_t len);
     void handleClearWiFi(AsyncWebServerRequest* request);
+    void handleTare(AsyncWebServerRequest* request);
+    void handleTareReset(AsyncWebServerRequest* request);
 
     // Calibration wizard
     void handleCalibrationStatus(AsyncWebServerRequest* request);

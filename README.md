@@ -54,6 +54,51 @@ static const int I2C_SCL = 22;
 static const uint8_t LCD_ADDR = 0x27;
 ```
 
+## Calibration and Zeroing
+
+Two separate things, and they fix different problems:
+
+- **Full calibration** (4 points: 0 / 6 / 4 / 2 kp) sets the *span* -- how many
+  millivolts correspond to one kp. Needed once per install.
+- **Zero / tare** sets the *zero point*. The reading drifts a few millivolts
+  between sessions, and because the whole 0-6 kp range is only ~150 mV, a few mV
+  is worth a few tenths of a kp at every load. That shows up as power that is far
+  too high at low resistance and roughly right at high resistance -- and it cannot
+  be corrected with the cycle constant, because the error is additive while the
+  cycle constant is multiplicative.
+
+Zero the bike before each ride, at a standstill with the brake at its lowest
+setting. Taring shifts the calibration curve without touching the span, so it
+never invalidates a full calibration. A full calibration clears the tare offset.
+
+### Physical button
+
+The calibration button (`CAL_BUTTON_PIN`, the BOOT button by default) does both:
+
+| Gesture | Action |
+|---|---|
+| Short press | Zero / tare |
+| Hold 3 seconds | Start full 4-point calibration (hold again to cancel) |
+
+Feedback on `STATUS_LED_PIN` (GPIO 2 by default, the onboard LED on most dev
+boards; set to 255 to disable):
+
+- 2 slow blinks -- zeroed
+- 5 fast blinks -- refused
+
+A tare is refused if the cranks are still turning (>5 rpm) or if the correction
+exceeds 1 kp, which means the brake was not at its lowest setting. Both leave the
+previous offset untouched.
+
+If your board has a spare button, set `TARE_BUTTON_PIN` in `BoardConfig.h` and it
+will zero on a single press, leaving the calibration button for calibration.
+
+### Web UI
+
+The **Zero / Tare** card shows the current offset in millivolts and offers
+*Zero Now* and *Clear Offset*. Equivalent endpoints: `POST /api/tare` and
+`POST /api/tare/reset`.
+
 ## File Structure
 
 - `wroom-monark.ino`: Main entry point. Handles setup, the main loop, and coordinates components.
@@ -62,6 +107,9 @@ static const uint8_t LCD_ADDR = 0x27;
 - `LcdUi1602.h/cpp`: Manages the I2C LCD display.
 - `PowerSource.h`: Abstract base class for power data sources.
 - `PowerSample.h`: Data structure for passing cycling metrics.
+- `Calibration.h/cpp`: ADC-to-kp curve, including the zero offset (tare).
+- `CalibrationProcess.h/cpp`: Button handling, the calibration wizard and taring.
+- `PowerWebServer.h/cpp`: Web UI and JSON API for power, calibration and zeroing.
 
 ## Usage
 

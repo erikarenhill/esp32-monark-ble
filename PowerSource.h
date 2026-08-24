@@ -19,4 +19,7 @@ public:
 
   // Update cycle constant at runtime (applied to subsequent samples)
   virtual void setCycleConstant(float cc) = 0;
+
+  // Latest cadence without consuming the pending sample
+  virtual float getCurrentRpm() const = 0;
 };

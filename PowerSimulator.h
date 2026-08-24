@@ -10,6 +10,7 @@ public:
   bool hasSample() const override;
   PowerSample getSample() override;
   void setCycleConstant(float cc) override { cycle_constant = cc; }
+  float getCurrentRpm() const override { return sample.rpm; }
 
 private:
   float cycle_constant;

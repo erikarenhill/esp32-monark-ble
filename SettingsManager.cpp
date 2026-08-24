@@ -59,6 +59,19 @@ float SettingsManager::loadCycleConstant(float defaultValue) {
     return value;
 }
 
+void SettingsManager::saveZeroOffset(float value) {
+    preferences.begin(NAMESPACE, false);
+    preferences.putFloat("zerooff", value);
+    preferences.end();
+}
+
+float SettingsManager::loadZeroOffset(float defaultValue) {
+    preferences.begin(NAMESPACE, true);
+    float value = preferences.getFloat("zerooff", defaultValue);
+    preferences.end();
+    return value;
+}
+
 void SettingsManager::saveWiFi(const char* ssid, const char* password) {
     preferences.begin(NAMESPACE, false);
     preferences.putString("wifi_ssid", ssid);
